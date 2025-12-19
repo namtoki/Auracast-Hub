@@ -1,4 +1,4 @@
-# Auracast Assistant + AWSバックエンド開発設計書 v2
+# Auracast Assistant + AWSバックエンド開発設計書 v3
 
 Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバックエンド（東京リージョン ap-northeast-1）と連携するプロジェクトの包括的な技術設計ドキュメントです。
 
@@ -9,33 +9,79 @@ Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバッ
 ## アーキテクチャ全体像
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      AURACAST ASSISTANT ARCHITECTURE                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ MOBILE (Flutter)                                                            │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │   UI Layer   │  │   Riverpod   │  │Method Channel│  │    Hive      │    │
-│ │ Material 3   │◄─┤    State     │◄─┤ Native BLE   │  │Local Storage │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ ANDROID NATIVE (Kotlin)                                                     │
-│ ┌──────────────────────────────────────────────────────────────────────┐   │
-│ │  BluetoothLeScanner    │  GATT Client (BASS)  │  PA Sync Manager    │   │
-│ │  Broadcast Discovery   │  Add Source to Sink  │  BIG Sync Control   │   │
-│ └──────────────────────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ AWS BACKEND (ap-northeast-1)                                                │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │ CloudFront   │  │ API Gateway  │  │   AppSync    │  │   Cognito    │    │
-│ │ + S3 Static  │  │  REST API    │  │   GraphQL    │  │  User Auth   │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-│        │                 │                 │                 │              │
-│        ▼                 ▼                 ▼                 ▼              │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │    Lambda    │  │  DynamoDB    │  │   Kinesis    │  │ Personalize  │    │
-│ │  Functions   │  │ Single-Table │  │  Firehose    │  │   ML Recs    │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            AURACAST ASSISTANT ARCHITECTURE v3                                       │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ MOBILE (Flutter)                                                                                    │
+│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│ │   UI Layer   │  │   Riverpod   │  │Method Channel│  │    Hive      │  │  Map Widget  │          │
+│ │ Material 3   │◄─┤    State     │◄─┤ Native BLE   │  │Local Storage │  │   地図表示    │          │
+│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘          │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ANDROID NATIVE (Kotlin)                                                                             │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  │
+│ │  BluetoothLeScanner    │  GATT Client (BASS)  │  PA Sync Manager   │  Location Services      │  │
+│ │  Broadcast Discovery   │  Add Source to Sink  │  BIG Sync Control  │  GPS/Network位置取得    │  │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ AWS BACKEND (ap-northeast-1) - データプレーン                                                       │
+│                                                                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────────────────────┐    │
+│  │                              API Layer (統合エンドポイント)                                  │    │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │    │
+│  │  │ CloudFront   │  │ API Gateway  │  │   AppSync    │  │  WebSocket   │                   │    │
+│  │  │    CDN       │  │  REST API    │  │   GraphQL    │  │  API (リアル  │                   │    │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │   タイム)    │                   │    │
+│  │         │                 │                 │          └──────────────┘                   │    │
+│  └─────────┼─────────────────┼─────────────────┼────────────────┼────────────────────────────┘    │
+│            │                 │                 │                │                                  │
+│  ┌─────────┼─────────────────┼─────────────────┼────────────────┼────────────────────────────┐    │
+│  │         ▼                 ▼                 ▼                ▼                             │    │
+│  │  ┌──────────────────────────────────────────────────────────────────────────────────────┐ │    │
+│  │  │                              Lambda Functions                                         │ │    │
+│  │  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐         │ │    │
+│  │  │  │ユーザー管理│ │チャンネル  │ │レビュー    │ │再生人数    │ │地図・位置  │         │ │    │
+│  │  │  │ Lambda     │ │管理 Lambda │ │処理 Lambda │ │集計 Lambda │ │検索 Lambda │         │ │    │
+│  │  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘ └────────────┘         │ │    │
+│  │  └──────────────────────────────────────────────────────────────────────────────────────┘ │    │
+│  │                                          │                                                │    │
+│  │  ┌───────────────────────────────────────┴────────────────────────────────────────────┐  │    │
+│  │  │                              Data Layer                                             │  │    │
+│  │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │  │    │
+│  │  │  │  DynamoDB    │  │ ElastiCache  │  │  OpenSearch  │  │     S3       │           │  │    │
+│  │  │  │ Single-Table │  │   (Redis)    │  │  Service     │  │  Data Lake   │           │  │    │
+│  │  │  │ ユーザー/    │  │ リアルタイム │  │ 口コミ検索   │  │  分析データ  │           │  │    │
+│  │  │  │ チャンネル/  │  │ カウンター   │  │ 全文検索     │  │  保存        │           │  │    │
+│  │  │  │ レビュー     │  └──────────────┘  └──────────────┘  └──────────────┘           │  │    │
+│  │  │  └──────────────┘                                                                   │  │    │
+│  │  └────────────────────────────────────────────────────────────────────────────────────┘  │    │
+│  │                                                                                           │    │
+│  └───────────────────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                                     │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ AWS BACKEND (ap-northeast-1) - 認証・分析プレーン                                                   │
+│                                                                                                     │
+│  ┌───────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │                              Authentication & ML Layer                                        │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │   Cognito    │  │ Personalize  │  │  Comprehend  │  │   Kinesis    │  │  Location    │   │ │
+│  │  │  User Pools  │  │  ML推薦      │  │  感情分析    │  │  Data Stream │  │   Service    │   │ │
+│  │  │  ユーザー認証│  │  エンジン    │  │  テキスト    │  │  イベント    │  │  地図・位置  │   │ │
+│  │  │  ソーシャル  │  │              │  │  分類        │  │  ストリーム  │  │  検索        │   │ │
+│  │  │  ログイン    │  │              │  │              │  │              │  │              │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  │         │                 │                 │                 │                │            │ │
+│  │         │                 │                 │                 │                │            │ │
+│  │         ▼                 ▼                 ▼                 ▼                ▼            │ │
+│  │  ┌──────────────────────────────────────────────────────────────────────────────────────┐  │ │
+│  │  │                              EventBridge (イベント駆動)                               │  │ │
+│  │  │  ユーザー登録完了 → プロファイル作成                                                   │  │ │
+│  │  │  チャンネル選択 → レコメンド更新                                                       │  │ │
+│  │  │  レビュー投稿 → 感情分析実行                                                          │  │ │
+│  │  │  再生開始/終了 → リスナー数更新                                                        │  │ │
+│  │  └──────────────────────────────────────────────────────────────────────────────────────┘  │ │
+│  └───────────────────────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1600,56 +1646,1390 @@ Point-in-Time Recovery: Enabled
 │ USER#12345     │ DEVICE#dev_001          │ deviceType, name, lastSeen       │
 │ USER#12345     │ FAVORITE#bc_001         │ broadcastId, addedAt             │
 │ USER#12345     │ HISTORY#2024-12-18      │ broadcastId, duration, timestamp │
+│ USER#12345     │ PREFERENCE              │ categories, languages, settings  │
 ├────────────────┼─────────────────────────┼──────────────────────────────────┤
 │ BROADCAST#bc_001│ META                   │ name, language, quality, location│
 │ BROADCAST#bc_001│ SCHEDULE#2024-12-18   │ startTime, endTime, description  │
+│ BROADCAST#bc_001│ STATS                  │ totalListeners, avgRating, etc   │
+├────────────────┼─────────────────────────┼──────────────────────────────────┤
+│ REVIEW#rev_001 │ META                    │ userId, broadcastId, rating, text│
+│ REVIEW#rev_001 │ SENTIMENT               │ score, magnitude, categories     │
 ├────────────────┼─────────────────────────┼──────────────────────────────────┤
 │ VENUE#venue_001│ META                    │ name, address, coordinates       │
 │ VENUE#venue_001│ BROADCAST#bc_001       │ broadcastId, position, active    │
+├────────────────┼─────────────────────────┼──────────────────────────────────┤
+│ GEO#35.6812#139│ BROADCAST#bc_001       │ broadcastId, geohash, distance   │
 └────────────────┴─────────────────────────┴──────────────────────────────────┘
+```
+
+### 8.3 追加GSI設計
+
+```
+GSI3: 口コミ検索用
+  - GSI3PK: BROADCAST#{broadcastId}
+  - GSI3SK: REVIEW#{timestamp}
+  - 用途: 特定チャンネルのレビュー一覧取得
+
+GSI4: 位置情報検索用（Geohash）
+  - GSI4PK: GEOHASH#{geohash_prefix}
+  - GSI4SK: {broadcastId}
+  - 用途: 近隣チャンネル検索
+
+GSI5: 人気ランキング用
+  - GSI5PK: CATEGORY#{category}
+  - GSI5SK: RANK#{score}#{broadcastId}
+  - 用途: カテゴリ別人気ランキング
 ```
 
 ---
 
-## 9. 実装チェックリスト
+## 9. サーバーサイド機能詳細設計
 
-### Phase 1: 基盤構築（Week 1-2）
+### 9.1 ユーザー登録・認証システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         ユーザー登録・認証アーキテクチャ                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│  │   Flutter   │───►│  Cognito    │───►│  Lambda     │───►│  DynamoDB   │     │
+│  │    App      │    │ User Pools  │    │ Post-Confirm│    │  User Table │     │
+│  └─────────────┘    └─────────────┘    │  Trigger    │    └─────────────┘     │
+│         │                 │            └─────────────┘           │             │
+│         │                 │                   │                  │             │
+│         │           ┌─────────────┐           │            ┌─────────────┐     │
+│         │           │  Identity   │           └───────────►│ EventBridge │     │
+│         └──────────►│    Pool     │                        │ User Events │     │
+│                     └─────────────┘                        └─────────────┘     │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.1.1 Cognito User Pool 設定
+
+```typescript
+// infrastructure/lib/constructs/auth-construct.ts
+const userPool = new cognito.UserPool(this, 'AuracastUserPool', {
+  userPoolName: 'auracast-users',
+  selfSignUpEnabled: true,
+  signInAliases: {
+    email: true,
+    phone: true,
+  },
+  autoVerify: {
+    email: true,
+  },
+  standardAttributes: {
+    email: { required: true, mutable: true },
+    nickname: { required: false, mutable: true },
+    locale: { required: false, mutable: true },
+  },
+  customAttributes: {
+    'preferred_categories': new cognito.StringAttribute({ mutable: true }),
+    'preferred_languages': new cognito.StringAttribute({ mutable: true }),
+  },
+  passwordPolicy: {
+    minLength: 8,
+    requireLowercase: true,
+    requireUppercase: true,
+    requireDigits: true,
+    requireSymbols: false,
+  },
+  accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+  mfa: cognito.Mfa.OPTIONAL,
+  mfaSecondFactor: {
+    sms: true,
+    otp: true,
+  },
+});
+
+// ソーシャルログイン設定
+const googleProvider = new cognito.UserPoolIdentityProviderGoogle(this, 'Google', {
+  clientId: process.env.GOOGLE_CLIENT_ID!,
+  clientSecret: SecretValue.secretsManager('google-oauth-secret'),
+  userPool,
+  scopes: ['email', 'profile'],
+  attributeMapping: {
+    email: cognito.ProviderAttribute.GOOGLE_EMAIL,
+    nickname: cognito.ProviderAttribute.GOOGLE_NAME,
+  },
+});
+
+const appleProvider = new cognito.UserPoolIdentityProviderApple(this, 'Apple', {
+  clientId: process.env.APPLE_CLIENT_ID!,
+  teamId: process.env.APPLE_TEAM_ID!,
+  keyId: process.env.APPLE_KEY_ID!,
+  privateKey: SecretValue.secretsManager('apple-private-key'),
+  userPool,
+  scopes: ['email', 'name'],
+});
+```
+
+#### 9.1.2 ユーザープロファイル Lambda
+
+```python
+# lambda/users/post_confirmation.py
+import boto3
+import json
+from datetime import datetime
+import uuid
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+eventbridge = boto3.client('events')
+
+def handler(event, context):
+    """Cognito Post Confirmation Trigger - ユーザープロファイル作成"""
+
+    user_attributes = event['request']['userAttributes']
+    user_id = event['userName']
+
+    # ユーザープロファイル作成
+    profile_item = {
+        'PK': f'USER#{user_id}',
+        'SK': 'PROFILE',
+        'userId': user_id,
+        'email': user_attributes.get('email'),
+        'nickname': user_attributes.get('nickname', ''),
+        'locale': user_attributes.get('locale', 'ja-JP'),
+        'createdAt': datetime.utcnow().isoformat(),
+        'updatedAt': datetime.utcnow().isoformat(),
+        'status': 'ACTIVE',
+        'GSI1PK': 'USERS',
+        'GSI1SK': f'CREATED#{datetime.utcnow().isoformat()}',
+    }
+
+    # ユーザー設定初期化
+    preference_item = {
+        'PK': f'USER#{user_id}',
+        'SK': 'PREFERENCE',
+        'preferredCategories': [],
+        'preferredLanguages': ['ja'],
+        'notificationEnabled': True,
+        'autoPlayEnabled': False,
+        'dataCollectionConsent': True,
+    }
+
+    # バッチ書き込み
+    with table.batch_writer() as batch:
+        batch.put_item(Item=profile_item)
+        batch.put_item(Item=preference_item)
+
+    # EventBridge にユーザー登録イベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.users',
+            'DetailType': 'UserRegistered',
+            'Detail': json.dumps({
+                'userId': user_id,
+                'email': user_attributes.get('email'),
+                'timestamp': datetime.utcnow().isoformat(),
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return event
+```
+
+#### 9.1.3 ユーザー API エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/users/me` | GET | 自分のプロファイル取得 |
+| `/users/me` | PUT | プロファイル更新 |
+| `/users/me/preferences` | GET/PUT | 設定取得・更新 |
+| `/users/me/devices` | GET/POST/DELETE | デバイス管理 |
+| `/users/me/history` | GET | 視聴履歴取得 |
+| `/users/me/favorites` | GET/POST/DELETE | お気に入り管理 |
+
+---
+
+### 9.2 チャンネル分析・レコメンドシステム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                         チャンネルレコメンドアーキテクチャ                               │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  ユーザー行動                                                                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│  Kinesis    │───►│  Lambda     │───►│    S3       │             │
+│  │ イベント送信 │    │Data Streams │    │ ETL処理     │    │ Data Lake   │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│         │                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         │                             │ Personalize │◄───│  Glue ETL   │             │
+│         │                             │   Dataset   │    │  データ変換  │             │
+│         │                             └─────────────┘    └─────────────┘             │
+│         │                                     │                                        │
+│         │                                     ▼                                        │
+│  レコメンド取得                        ┌─────────────┐                                 │
+│  ┌─────────────┐    ┌─────────────┐    │ Personalize │                                 │
+│  │   Flutter   │◄───│ API Gateway │◄───│  Campaign   │                                 │
+│  │ レコメンド  │    │  /recommend │    │ リアルタイム │                                 │
+│  │  表示       │    │             │    │   推薦      │                                 │
+│  └─────────────┘    └─────────────┘    └─────────────┘                                 │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.2.1 ユーザー行動イベントスキーマ
+
+```json
+{
+  "eventType": "CHANNEL_INTERACTION",
+  "userId": "user_12345",
+  "sessionId": "session_abc",
+  "timestamp": "2024-12-18T10:30:00Z",
+  "eventName": "LISTEN_START | LISTEN_END | FAVORITE_ADD | SEARCH | VIEW_DETAIL",
+  "properties": {
+    "broadcastId": "bc_001",
+    "broadcastName": "Cafe Jazz BGM",
+    "category": "MUSIC",
+    "duration": 1800,
+    "location": {
+      "latitude": 35.6812,
+      "longitude": 139.7671,
+      "geohash": "xn77h"
+    },
+    "deviceType": "TWS",
+    "signalStrength": -45
+  }
+}
+```
+
+#### 9.2.2 Amazon Personalize 設定
+
+```typescript
+// infrastructure/lib/constructs/personalize-construct.ts
+
+// データセットグループ
+const datasetGroup = new personalize.CfnDatasetGroup(this, 'AuracastDatasetGroup', {
+  name: 'auracast-recommendations',
+});
+
+// インタラクションスキーマ
+const interactionsSchema = {
+  type: 'record',
+  name: 'Interactions',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'USER_ID', type: 'string' },
+    { name: 'ITEM_ID', type: 'string' },
+    { name: 'TIMESTAMP', type: 'long' },
+    { name: 'EVENT_TYPE', type: 'string' },
+    { name: 'EVENT_VALUE', type: ['null', 'float'], default: null },
+  ],
+  version: '1.0',
+};
+
+// アイテムスキーマ（チャンネルメタデータ）
+const itemsSchema = {
+  type: 'record',
+  name: 'Items',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'ITEM_ID', type: 'string' },
+    { name: 'CATEGORY', type: 'string', categorical: true },
+    { name: 'LANGUAGE', type: 'string', categorical: true },
+    { name: 'VENUE_TYPE', type: 'string', categorical: true },
+    { name: 'AUDIO_QUALITY', type: 'string', categorical: true },
+    { name: 'CREATION_TIMESTAMP', type: 'long' },
+  ],
+  version: '1.0',
+};
+
+// ユーザースキーマ
+const usersSchema = {
+  type: 'record',
+  name: 'Users',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'USER_ID', type: 'string' },
+    { name: 'PREFERRED_CATEGORIES', type: 'string', categorical: true },
+    { name: 'PREFERRED_LANGUAGES', type: 'string', categorical: true },
+    { name: 'LOCALE', type: 'string', categorical: true },
+  ],
+  version: '1.0',
+};
+
+// レシピ選択
+// - ユーザーパーソナライゼーション: aws-user-personalization-v2
+// - 類似アイテム: aws-similar-items
+// - リアルタイムレコメンド: aws-personalized-ranking
+```
+
+#### 9.2.3 レコメンド API Lambda
+
+```python
+# lambda/recommendations/get_recommendations.py
+import boto3
+import json
+
+personalize_runtime = boto3.client('personalize-runtime')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+CAMPAIGN_ARN = 'arn:aws:personalize:ap-northeast-1:xxx:campaign/auracast-user-personalization'
+
+def handler(event, context):
+    """ユーザーにパーソナライズされたチャンネル推薦を返す"""
+
+    user_id = event['requestContext']['authorizer']['claims']['sub']
+    query_params = event.get('queryStringParameters', {}) or {}
+
+    num_results = int(query_params.get('limit', 10))
+    category_filter = query_params.get('category')
+
+    # フィルター式構築
+    filter_arn = None
+    if category_filter:
+        filter_arn = f'arn:aws:personalize:ap-northeast-1:xxx:filter/category-{category_filter}'
+
+    # Personalize からレコメンド取得
+    response = personalize_runtime.get_recommendations(
+        campaignArn=CAMPAIGN_ARN,
+        userId=user_id,
+        numResults=num_results,
+        filterArn=filter_arn,
+        context={
+            'DEVICE_TYPE': query_params.get('deviceType', 'UNKNOWN'),
+        }
+    )
+
+    # チャンネル詳細情報を DynamoDB から取得
+    item_ids = [item['itemId'] for item in response['itemList']]
+
+    recommendations = []
+    for item_id in item_ids:
+        channel_response = table.get_item(
+            Key={'PK': f'BROADCAST#{item_id}', 'SK': 'META'}
+        )
+        if 'Item' in channel_response:
+            channel = channel_response['Item']
+            recommendations.append({
+                'broadcastId': item_id,
+                'name': channel.get('name'),
+                'category': channel.get('category'),
+                'language': channel.get('language'),
+                'venue': channel.get('venue'),
+                'currentListeners': channel.get('currentListeners', 0),
+                'avgRating': channel.get('avgRating', 0),
+                'score': next(
+                    (item['score'] for item in response['itemList'] if item['itemId'] == item_id),
+                    0
+                )
+            })
+
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps({
+            'recommendations': recommendations,
+            'recommendationId': response.get('recommendationId'),
+        })
+    }
+```
+
+#### 9.2.4 レコメンドAPI エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/recommendations` | GET | パーソナライズ推薦取得 |
+| `/recommendations/similar/{broadcastId}` | GET | 類似チャンネル取得 |
+| `/recommendations/trending` | GET | トレンドチャンネル |
+| `/recommendations/nearby` | GET | 近隣人気チャンネル |
+| `/events` | POST | ユーザー行動イベント送信 |
+
+---
+
+### 9.3 口コミ評価・分類システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                            口コミ・レビューアーキテクチャ                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  レビュー投稿フロー                                                                      │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │───►│  DynamoDB   │             │
+│  │ レビュー投稿│    │ POST /review│    │ 投稿処理    │    │ レビュー保存 │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│                                               │                  │                     │
+│                                               ▼                  │                     │
+│                                        ┌─────────────┐           │                     │
+│                                        │ EventBridge │           │                     │
+│                                        │ ReviewPosted│           │                     │
+│                                        └─────────────┘           │                     │
+│                                               │                  │                     │
+│                              ┌────────────────┼──────────────────┤                     │
+│                              ▼                ▼                  ▼                     │
+│                       ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │
+│                       │ Comprehend  │  │ OpenSearch  │  │   Lambda    │               │
+│                       │ 感情分析    │  │ インデックス │  │ 評価集計    │               │
+│                       └─────────────┘  └─────────────┘  └─────────────┘               │
+│                              │                │                  │                     │
+│                              ▼                ▼                  ▼                     │
+│                       ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │
+│                       │  DynamoDB   │  │ OpenSearch  │  │  DynamoDB   │               │
+│                       │ 感情スコア  │  │ 検索可能    │  │ BROADCAST   │               │
+│                       │  保存       │  │             │  │ 統計更新    │               │
+│                       └─────────────┘  └─────────────┘  └─────────────┘               │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.3.1 レビューデータモデル
+
+```typescript
+interface Review {
+  reviewId: string;           // UUID
+  userId: string;             // 投稿者ID
+  broadcastId: string;        // 対象チャンネル
+  rating: number;             // 1-5星評価
+  title: string;              // レビュータイトル（任意）
+  content: string;            // レビュー本文
+  tags: string[];             // ユーザータグ（例: ["音質良い", "BGMに最適"]）
+
+  // 自動分析結果
+  sentiment: {
+    score: number;            // -1.0 ~ 1.0
+    magnitude: number;        // 0 ~ ∞
+    label: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+  };
+  categories: string[];       // 自動分類カテゴリ
+  keyPhrases: string[];       // 抽出キーフレーズ
+
+  // メタデータ
+  createdAt: string;
+  updatedAt: string;
+  helpfulCount: number;       // 「参考になった」数
+  reportCount: number;        // 報告数
+  status: 'ACTIVE' | 'HIDDEN' | 'DELETED';
+}
+```
+
+#### 9.3.2 レビュー投稿 Lambda
+
+```python
+# lambda/reviews/create_review.py
+import boto3
+import json
+from datetime import datetime
+import uuid
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+eventbridge = boto3.client('events')
+
+def handler(event, context):
+    """レビュー投稿処理"""
+
+    user_id = event['requestContext']['authorizer']['claims']['sub']
+    body = json.loads(event['body'])
+
+    review_id = str(uuid.uuid4())
+    timestamp = datetime.utcnow().isoformat()
+
+    # 重複投稿チェック（同一ユーザー・同一チャンネル）
+    existing = table.query(
+        IndexName='GSI3',
+        KeyConditionExpression='GSI3PK = :pk',
+        FilterExpression='userId = :uid',
+        ExpressionAttributeValues={
+            ':pk': f'BROADCAST#{body["broadcastId"]}',
+            ':uid': user_id,
+        },
+        Limit=1
+    )
+
+    if existing['Items']:
+        return {
+            'statusCode': 409,
+            'body': json.dumps({'error': 'Already reviewed this channel'})
+        }
+
+    # レビュー作成
+    review_item = {
+        'PK': f'REVIEW#{review_id}',
+        'SK': 'META',
+        'reviewId': review_id,
+        'userId': user_id,
+        'broadcastId': body['broadcastId'],
+        'rating': body['rating'],
+        'title': body.get('title', ''),
+        'content': body['content'],
+        'tags': body.get('tags', []),
+        'createdAt': timestamp,
+        'updatedAt': timestamp,
+        'helpfulCount': 0,
+        'reportCount': 0,
+        'status': 'ACTIVE',
+        # GSI用
+        'GSI3PK': f'BROADCAST#{body["broadcastId"]}',
+        'GSI3SK': f'REVIEW#{timestamp}',
+    }
+
+    table.put_item(Item=review_item)
+
+    # EventBridge にイベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.reviews',
+            'DetailType': 'ReviewPosted',
+            'Detail': json.dumps({
+                'reviewId': review_id,
+                'userId': user_id,
+                'broadcastId': body['broadcastId'],
+                'rating': body['rating'],
+                'content': body['content'],
+                'timestamp': timestamp,
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return {
+        'statusCode': 201,
+        'body': json.dumps({'reviewId': review_id})
+    }
+```
+
+#### 9.3.3 感情分析 Lambda（EventBridge トリガー）
+
+```python
+# lambda/reviews/analyze_sentiment.py
+import boto3
+import json
+
+comprehend = boto3.client('comprehend')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def handler(event, context):
+    """Amazon Comprehend による感情分析"""
+
+    detail = event['detail']
+    review_id = detail['reviewId']
+    content = detail['content']
+
+    # 感情分析
+    sentiment_response = comprehend.detect_sentiment(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # キーフレーズ抽出
+    phrases_response = comprehend.detect_key_phrases(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # エンティティ抽出（場所、組織などの自動検出）
+    entities_response = comprehend.detect_entities(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # 感情スコア計算
+    sentiment_scores = sentiment_response['SentimentScore']
+    score = sentiment_scores['Positive'] - sentiment_scores['Negative']
+    magnitude = max(
+        sentiment_scores['Positive'],
+        sentiment_scores['Negative'],
+        sentiment_scores['Mixed']
+    )
+
+    # DynamoDB 更新
+    table.update_item(
+        Key={'PK': f'REVIEW#{review_id}', 'SK': 'META'},
+        UpdateExpression='''
+            SET sentiment = :sentiment,
+                keyPhrases = :phrases,
+                entities = :entities
+        ''',
+        ExpressionAttributeValues={
+            ':sentiment': {
+                'score': str(score),
+                'magnitude': str(magnitude),
+                'label': sentiment_response['Sentiment'],
+            },
+            ':phrases': [p['Text'] for p in phrases_response['KeyPhrases'][:10]],
+            ':entities': [
+                {'text': e['Text'], 'type': e['Type']}
+                for e in entities_response['Entities'][:10]
+            ],
+        }
+    )
+
+    # 感情分析結果を別レコードに保存
+    table.put_item(
+        Item={
+            'PK': f'REVIEW#{review_id}',
+            'SK': 'SENTIMENT',
+            'sentimentLabel': sentiment_response['Sentiment'],
+            'sentimentScore': json.loads(json.dumps(sentiment_scores), parse_float=str),
+            'keyPhrases': [p['Text'] for p in phrases_response['KeyPhrases']],
+            'analyzedAt': detail['timestamp'],
+        }
+    )
+
+    return {'statusCode': 200}
+```
+
+#### 9.3.4 OpenSearch インデックス設計
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "reviewId": { "type": "keyword" },
+      "userId": { "type": "keyword" },
+      "broadcastId": { "type": "keyword" },
+      "rating": { "type": "integer" },
+      "title": {
+        "type": "text",
+        "analyzer": "kuromoji"
+      },
+      "content": {
+        "type": "text",
+        "analyzer": "kuromoji"
+      },
+      "tags": { "type": "keyword" },
+      "sentiment": {
+        "properties": {
+          "score": { "type": "float" },
+          "label": { "type": "keyword" }
+        }
+      },
+      "keyPhrases": { "type": "keyword" },
+      "createdAt": { "type": "date" },
+      "location": { "type": "geo_point" }
+    }
+  },
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "kuromoji": {
+          "type": "custom",
+          "tokenizer": "kuromoji_tokenizer"
+        }
+      }
+    }
+  }
+}
+```
+
+#### 9.3.5 レビューAPI エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/reviews` | POST | レビュー投稿 |
+| `/reviews/{reviewId}` | GET/PUT/DELETE | レビュー操作 |
+| `/reviews/{reviewId}/helpful` | POST | 「参考になった」|
+| `/broadcasts/{id}/reviews` | GET | チャンネルのレビュー一覧 |
+| `/reviews/search` | GET | レビュー検索（全文検索）|
+| `/broadcasts/{id}/rating-summary` | GET | 評価サマリー取得 |
+
+---
+
+### 9.4 再生人数（リスナー数）トラッキングシステム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           リアルタイムリスナー数アーキテクチャ                           │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  リスナー参加/離脱                                                                       │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│  WebSocket  │───►│   Lambda    │───►│ ElastiCache │             │
+│  │ 接続/切断   │    │  API GW     │    │ Connection  │    │   (Redis)   │             │
+│  │  通知       │    │             │    │  Handler    │    │  カウンター  │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│         ▲                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         │                             │ EventBridge │    │   Lambda    │             │
+│         │                             │ Listener    │    │ 定期集計    │             │
+│         │                             │  Changed    │    │ (1分毎)     │             │
+│         │                             └─────────────┘    └─────────────┘             │
+│         │                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         └─────────────────────────────│  AppSync    │    │  DynamoDB   │             │
+│              リアルタイム配信          │ Subscription│    │ 統計保存    │             │
+│                                        └─────────────┘    └─────────────┘             │
+│                                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
+│  │                           Redis データ構造                                       │   │
+│  │                                                                                   │   │
+│  │  Key: listeners:{broadcastId}        │  SET  │  接続中ユーザーIDセット          │   │
+│  │  Key: listener_count:{broadcastId}   │  INT  │  リスナー総数（原子的カウンター）│   │
+│  │  Key: hourly_peak:{broadcastId}:{h}  │  INT  │  時間別ピーク人数                │   │
+│  │  Key: session:{connectionId}         │ HASH  │  接続セッション情報              │   │
+│  │                                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.4.1 WebSocket 接続ハンドラー
+
+```python
+# lambda/listeners/websocket_handler.py
+import boto3
+import json
+import os
+from datetime import datetime
+
+redis_client = None  # Lambda Layer経由で初期化
+dynamodb = boto3.resource('dynamodb')
+connections_table = dynamodb.Table('auracast-websocket-connections')
+eventbridge = boto3.client('events')
+
+def get_redis():
+    global redis_client
+    if redis_client is None:
+        import redis
+        redis_client = redis.Redis(
+            host=os.environ['REDIS_HOST'],
+            port=6379,
+            decode_responses=True
+        )
+    return redis_client
+
+def connect_handler(event, context):
+    """WebSocket $connect"""
+    connection_id = event['requestContext']['connectionId']
+
+    # 接続情報保存
+    connections_table.put_item(
+        Item={
+            'connectionId': connection_id,
+            'connectedAt': datetime.utcnow().isoformat(),
+            'userId': event['requestContext'].get('authorizer', {}).get('userId'),
+        }
+    )
+
+    return {'statusCode': 200}
+
+def disconnect_handler(event, context):
+    """WebSocket $disconnect"""
+    connection_id = event['requestContext']['connectionId']
+    r = get_redis()
+
+    # セッション情報取得
+    session = r.hgetall(f'session:{connection_id}')
+
+    if session and 'broadcastId' in session:
+        broadcast_id = session['broadcastId']
+        user_id = session.get('userId')
+
+        # リスナーセットから削除
+        r.srem(f'listeners:{broadcast_id}', user_id or connection_id)
+
+        # カウンター減少
+        new_count = r.decr(f'listener_count:{broadcast_id}')
+
+        # イベント発行
+        eventbridge.put_events(
+            Entries=[{
+                'Source': 'auracast.listeners',
+                'DetailType': 'ListenerLeft',
+                'Detail': json.dumps({
+                    'broadcastId': broadcast_id,
+                    'currentCount': max(0, new_count),
+                    'timestamp': datetime.utcnow().isoformat(),
+                }),
+                'EventBusName': 'auracast-events',
+            }]
+        )
+
+    # セッション削除
+    r.delete(f'session:{connection_id}')
+    connections_table.delete_item(Key={'connectionId': connection_id})
+
+    return {'statusCode': 200}
+
+def join_broadcast_handler(event, context):
+    """チャンネル参加メッセージ処理"""
+    connection_id = event['requestContext']['connectionId']
+    body = json.loads(event['body'])
+    broadcast_id = body['broadcastId']
+    user_id = body.get('userId')
+
+    r = get_redis()
+
+    # セッション保存
+    r.hset(f'session:{connection_id}', mapping={
+        'broadcastId': broadcast_id,
+        'userId': user_id or connection_id,
+        'joinedAt': datetime.utcnow().isoformat(),
+    })
+    r.expire(f'session:{connection_id}', 3600 * 24)  # 24時間TTL
+
+    # リスナーセットに追加
+    r.sadd(f'listeners:{broadcast_id}', user_id or connection_id)
+
+    # カウンター増加
+    new_count = r.incr(f'listener_count:{broadcast_id}')
+
+    # ピーク更新
+    hour_key = datetime.utcnow().strftime('%Y%m%d%H')
+    r.set(
+        f'hourly_peak:{broadcast_id}:{hour_key}',
+        max(int(r.get(f'hourly_peak:{broadcast_id}:{hour_key}') or 0), new_count)
+    )
+
+    # イベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.listeners',
+            'DetailType': 'ListenerJoined',
+            'Detail': json.dumps({
+                'broadcastId': broadcast_id,
+                'currentCount': new_count,
+                'timestamp': datetime.utcnow().isoformat(),
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'currentListeners': new_count})
+    }
+```
+
+#### 9.4.2 リアルタイム配信（AppSync Subscription）
+
+```graphql
+# graphql/schema.graphql
+
+type Subscription {
+  onListenerCountChanged(broadcastId: ID!): ListenerUpdate
+    @aws_subscribe(mutations: ["updateListenerCount"])
+}
+
+type ListenerUpdate {
+  broadcastId: ID!
+  currentCount: Int!
+  change: Int!
+  timestamp: AWSDateTime!
+}
+
+type Mutation {
+  updateListenerCount(input: ListenerCountInput!): ListenerUpdate
+}
+
+input ListenerCountInput {
+  broadcastId: ID!
+  currentCount: Int!
+  change: Int!
+}
+
+type Query {
+  getListenerCount(broadcastId: ID!): ListenerStats
+  getListenerHistory(broadcastId: ID!, period: StatsPeriod!): [ListenerDataPoint!]!
+}
+
+type ListenerStats {
+  broadcastId: ID!
+  currentCount: Int!
+  peakToday: Int!
+  peakAllTime: Int!
+  averageDaily: Float!
+}
+
+enum StatsPeriod {
+  HOUR
+  DAY
+  WEEK
+  MONTH
+}
+
+type ListenerDataPoint {
+  timestamp: AWSDateTime!
+  count: Int!
+}
+```
+
+#### 9.4.3 定期集計 Lambda（CloudWatch Events 1分毎）
+
+```python
+# lambda/listeners/aggregate_stats.py
+import boto3
+import json
+from datetime import datetime, timedelta
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def handler(event, context):
+    """1分毎にRedisからDynamoDBに統計を永続化"""
+
+    r = get_redis()
+
+    # アクティブなチャンネルのリスナー数を取得
+    broadcast_keys = r.keys('listener_count:*')
+
+    timestamp = datetime.utcnow()
+    minute_key = timestamp.strftime('%Y%m%d%H%M')
+
+    for key in broadcast_keys:
+        broadcast_id = key.split(':')[1]
+        count = int(r.get(key) or 0)
+
+        if count > 0:
+            # 分単位の統計保存
+            table.put_item(
+                Item={
+                    'PK': f'STATS#{broadcast_id}',
+                    'SK': f'MINUTE#{minute_key}',
+                    'count': count,
+                    'timestamp': timestamp.isoformat(),
+                    'TTL': int((timestamp + timedelta(days=7)).timestamp()),  # 7日後に削除
+                }
+            )
+
+            # チャンネルメタデータの現在リスナー数を更新
+            table.update_item(
+                Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'},
+                UpdateExpression='SET currentListeners = :count, lastUpdated = :ts',
+                ExpressionAttributeValues={
+                    ':count': count,
+                    ':ts': timestamp.isoformat(),
+                }
+            )
+
+    return {'statusCode': 200}
+```
+
+#### 9.4.4 リスナー統計API
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/broadcasts/{id}/listeners` | GET | 現在のリスナー数 |
+| `/broadcasts/{id}/listeners/history` | GET | リスナー数履歴 |
+| `/broadcasts/{id}/listeners/peak` | GET | ピーク統計 |
+| `/stats/top-listeners` | GET | リスナー数ランキング |
+| WebSocket `/ws` | CONNECT | リアルタイム接続 |
+| WebSocket `joinBroadcast` | MESSAGE | チャンネル参加 |
+| WebSocket `leaveBroadcast` | MESSAGE | チャンネル離脱 |
+
+---
+
+### 9.5 地図上の分布（位置情報）システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           位置情報・地図分布アーキテクチャ                               │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  位置情報登録                                                                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │───►│  DynamoDB   │             │
+│  │ チャンネル  │    │ POST /venues│    │ 位置登録    │    │ GeoHash     │             │
+│  │ 位置登録    │    │             │    │             │    │  保存       │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│                                               │                  │                     │
+│                                               ▼                  │                     │
+│                                        ┌─────────────┐           │                     │
+│                                        │  Location   │           │                     │
+│                                        │  Service    │           │                     │
+│                                        │ Place Index │           │                     │
+│                                        └─────────────┘           │                     │
+│                                                                  │                     │
+│  近隣検索                                                         │                     │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │                     │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │◄─────────┘                     │
+│  │ 現在地から  │    │GET /nearby  │    │ GeoHash    │                                 │
+│  │ 検索        │    │             │    │ 検索       │                                 │
+│  └─────────────┘    └─────────────┘    └─────────────┘                                 │
+│         │                                     │                                        │
+│         │                                     ▼                                        │
+│         │                             ┌─────────────┐                                 │
+│         │                             │  Location   │                                 │
+│         │                             │  Service    │                                 │
+│         │                             │ Route Calc  │                                 │
+│         │                             └─────────────┘                                 │
+│         │                                     │                                        │
+│         ▼                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
+│  │                           Flutter Map Widget                                     │   │
+│  │  ┌───────────────────────────────────────────────────────────────────────────┐  │   │
+│  │  │                                                                           │  │   │
+│  │  │     📍 Museum Audio Guide (200m)                                          │  │   │
+│  │  │          ⭐ 4.5 | 👥 23人                                                  │  │   │
+│  │  │                                                                           │  │   │
+│  │  │              📍 Cafe Jazz (500m)                                          │  │   │
+│  │  │                   ⭐ 4.2 | 👥 45人                                         │  │   │
+│  │  │                              🔵 現在地                                     │  │   │
+│  │  │                                                                           │  │   │
+│  │  │                        📍 Station Info (800m)                             │  │   │
+│  │  │                             ⭐ 3.8 | 👥 12人                               │  │   │
+│  │  │                                                                           │  │   │
+│  │  └───────────────────────────────────────────────────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.5.1 Geohash を使った位置検索設計
+
+```python
+# lambda/geo/geohash_utils.py
+import geohash2 as geohash
+
+GEOHASH_PRECISION = 6  # 約1.2km x 0.6km の精度
+
+def encode_location(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
+    """緯度経度をGeohashに変換"""
+    return geohash.encode(lat, lon, precision)
+
+def get_neighbors(gh: str) -> list:
+    """隣接する8つのGeohashを取得（近隣検索用）"""
+    return geohash.neighbors(gh)
+
+def decode_location(gh: str) -> tuple:
+    """Geohashを緯度経度に変換"""
+    return geohash.decode(gh)
+
+def get_search_hashes(lat: float, lon: float, radius_km: float) -> list:
+    """
+    検索範囲のGeohashリストを生成
+    radius_km: 検索半径（km）
+    """
+    # 精度を半径に基づいて調整
+    if radius_km <= 0.5:
+        precision = 7
+    elif radius_km <= 2:
+        precision = 6
+    elif radius_km <= 10:
+        precision = 5
+    else:
+        precision = 4
+
+    center_hash = geohash.encode(lat, lon, precision)
+    neighbors = geohash.neighbors(center_hash)
+
+    return [center_hash] + neighbors
+```
+
+#### 9.5.2 位置情報登録 Lambda
+
+```python
+# lambda/geo/register_location.py
+import boto3
+import json
+from datetime import datetime
+from geo.geohash_utils import encode_location
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+location_client = boto3.client('location')
+
+PLACE_INDEX_NAME = 'auracast-places'
+
+def handler(event, context):
+    """チャンネルの位置情報を登録"""
+
+    body = json.loads(event['body'])
+    broadcast_id = body['broadcastId']
+    lat = body['latitude']
+    lon = body['longitude']
+
+    # Geohash 生成
+    gh = encode_location(lat, lon)
+    gh_prefix = gh[:4]  # GSI用のプレフィックス
+
+    # Amazon Location Service で住所逆ジオコーディング
+    place_response = location_client.search_place_index_for_position(
+        IndexName=PLACE_INDEX_NAME,
+        Position=[lon, lat],
+        MaxResults=1,
+        Language='ja'
+    )
+
+    address = ''
+    place_name = ''
+    if place_response['Results']:
+        place = place_response['Results'][0]['Place']
+        address = place.get('Label', '')
+        place_name = place.get('AddressNumber', '') or ''
+
+    # DynamoDB に位置情報保存
+    timestamp = datetime.utcnow().isoformat()
+
+    # チャンネルメタデータ更新
+    table.update_item(
+        Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'},
+        UpdateExpression='''
+            SET #loc = :loc, geohash = :gh, address = :addr, updatedAt = :ts
+        ''',
+        ExpressionAttributeNames={'#loc': 'location'},
+        ExpressionAttributeValues={
+            ':loc': {'latitude': str(lat), 'longitude': str(lon)},
+            ':gh': gh,
+            ':addr': address,
+            ':ts': timestamp,
+        }
+    )
+
+    # Geohash インデックス用レコード
+    table.put_item(
+        Item={
+            'PK': f'GEO#{gh_prefix}',
+            'SK': f'BROADCAST#{broadcast_id}',
+            'broadcastId': broadcast_id,
+            'geohash': gh,
+            'latitude': str(lat),
+            'longitude': str(lon),
+            'address': address,
+            'GSI4PK': f'GEOHASH#{gh_prefix}',
+            'GSI4SK': broadcast_id,
+        }
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'geohash': gh,
+            'address': address,
+        })
+    }
+```
+
+#### 9.5.3 近隣チャンネル検索 Lambda
+
+```python
+# lambda/geo/search_nearby.py
+import boto3
+import json
+from math import radians, sin, cos, sqrt, atan2
+from geo.geohash_utils import get_search_hashes, decode_location
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """2点間の距離を計算（km）"""
+    R = 6371  # 地球の半径（km）
+
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+
+    return R * c
+
+def handler(event, context):
+    """現在地から近いチャンネルを検索"""
+
+    params = event.get('queryStringParameters', {}) or {}
+    lat = float(params['latitude'])
+    lon = float(params['longitude'])
+    radius_km = float(params.get('radius', 5))  # デフォルト5km
+    limit = int(params.get('limit', 20))
+
+    # 検索対象のGeohashを取得
+    search_hashes = get_search_hashes(lat, lon, radius_km)
+
+    # 各Geohashプレフィックスで検索
+    candidates = []
+    for gh in search_hashes:
+        gh_prefix = gh[:4]
+
+        response = table.query(
+            IndexName='GSI4',
+            KeyConditionExpression='GSI4PK = :pk',
+            ExpressionAttributeValues={
+                ':pk': f'GEOHASH#{gh_prefix}',
+            }
+        )
+        candidates.extend(response.get('Items', []))
+
+    # 距離計算してフィルタリング
+    results = []
+    seen_ids = set()
+
+    for item in candidates:
+        broadcast_id = item['broadcastId']
+        if broadcast_id in seen_ids:
+            continue
+        seen_ids.add(broadcast_id)
+
+        item_lat = float(item['latitude'])
+        item_lon = float(item['longitude'])
+        distance = haversine_distance(lat, lon, item_lat, item_lon)
+
+        if distance <= radius_km:
+            # チャンネル詳細を取得
+            channel_response = table.get_item(
+                Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'}
+            )
+
+            if 'Item' in channel_response:
+                channel = channel_response['Item']
+                results.append({
+                    'broadcastId': broadcast_id,
+                    'name': channel.get('name'),
+                    'category': channel.get('category'),
+                    'distance': round(distance, 2),
+                    'distanceUnit': 'km',
+                    'location': {
+                        'latitude': item_lat,
+                        'longitude': item_lon,
+                    },
+                    'address': item.get('address'),
+                    'currentListeners': channel.get('currentListeners', 0),
+                    'avgRating': channel.get('avgRating', 0),
+                })
+
+    # 距離でソート
+    results.sort(key=lambda x: x['distance'])
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'broadcasts': results[:limit],
+            'searchCenter': {'latitude': lat, 'longitude': lon},
+            'searchRadius': radius_km,
+            'totalFound': len(results),
+        })
+    }
+```
+
+#### 9.5.4 Amazon Location Service 設定
+
+```typescript
+// infrastructure/lib/constructs/location-construct.ts
+import * as location from 'aws-cdk-lib/aws-location';
+
+// Place Index（逆ジオコーディング用）
+const placeIndex = new location.CfnPlaceIndex(this, 'AuracastPlaceIndex', {
+  indexName: 'auracast-places',
+  dataSource: 'Esri',  // または 'Here'
+  dataSourceConfiguration: {
+    intendedUse: 'SingleUse',
+  },
+  pricingPlan: 'RequestBasedUsage',
+});
+
+// Map（クライアント側地図表示用）
+const map = new location.CfnMap(this, 'AuracastMap', {
+  mapName: 'auracast-map',
+  configuration: {
+    style: 'VectorEsriNavigation',
+  },
+  pricingPlan: 'RequestBasedUsage',
+});
+
+// Geofence Collection（任意：エリア通知用）
+const geofenceCollection = new location.CfnGeofenceCollection(this, 'AuracastGeofences', {
+  collectionName: 'auracast-geofences',
+  pricingPlan: 'RequestBasedUsage',
+});
+```
+
+#### 9.5.5 位置情報 API エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/broadcasts/nearby` | GET | 近隣チャンネル検索 |
+| `/broadcasts/{id}/location` | GET/PUT | 位置情報取得・更新 |
+| `/venues` | GET/POST | 会場一覧・登録 |
+| `/venues/{id}/broadcasts` | GET | 会場のチャンネル一覧 |
+| `/map/tiles/{z}/{x}/{y}` | GET | 地図タイル（Location Service経由）|
+| `/geocode/reverse` | GET | 逆ジオコーディング |
+
+---
+
+## 10. 実装チェックリスト
+
+### Phase 1: 基盤構築
 - [ ] Flutter プロジェクト初期化
 - [ ] Android Method Channel セットアップ
 - [ ] AWS CDK インフラストラクチャ構築
-- [ ] Cognito ユーザー認証設定
-- [ ] DynamoDB テーブル作成
+- [ ] DynamoDB テーブル作成（Single-Table + 5 GSI）
+- [ ] EventBridge イベントバス設定
 
-### Phase 2: Bluetooth実装（Week 3-4）
+### Phase 2: ユーザー認証システム
+- [ ] Cognito User Pool 設定
+- [ ] ソーシャルログイン（Google/Apple）設定
+- [ ] Post Confirmation Lambda 実装
+- [ ] ユーザープロファイル API 実装
+- [ ] Flutter Amplify Auth 統合
+
+### Phase 3: Bluetooth実装
 - [ ] AuracastScanner実装（BluetoothLeScanner + ScanFilter）
 - [ ] BassGattManager実装（BASS GATT操作）
 - [ ] Add Source / Remove Source操作
 - [ ] Broadcast Receive State監視
 - [ ] Flutter Provider統合
 
-### Phase 3: コア機能（Week 5-6）
+### Phase 4: コア機能
 - [ ] ブロードキャスト一覧UI
 - [ ] 接続・切断フロー
 - [ ] お気に入り保存機能
 - [ ] リスニング履歴
 
-### Phase 4: 高度な機能（Week 7-8）
+### Phase 5: レコメンドシステム
+- [ ] Kinesis Data Streams 設定
+- [ ] ユーザー行動イベント送信実装
+- [ ] Amazon Personalize データセット設定
+- [ ] Personalize ソリューション・キャンペーン作成
+- [ ] レコメンド API Lambda 実装
+- [ ] Flutter レコメンドUI 実装
+
+### Phase 6: 口コミ評価システム
+- [ ] レビュー投稿 API 実装
+- [ ] Amazon Comprehend 感情分析 Lambda 実装
+- [ ] OpenSearch Service クラスター設定
+- [ ] レビュー検索・インデックス Lambda 実装
+- [ ] 評価集計 Lambda 実装
+- [ ] Flutter レビューUI 実装
+
+### Phase 7: リスナー数トラッキング
+- [ ] ElastiCache (Redis) クラスター設定
+- [ ] WebSocket API Gateway 設定
+- [ ] WebSocket 接続/切断ハンドラー Lambda 実装
+- [ ] リスナー参加/離脱処理 Lambda 実装
+- [ ] AppSync Subscription 設定
+- [ ] 定期集計 Lambda（CloudWatch Events）実装
+- [ ] Flutter リアルタイムリスナー数UI 実装
+
+### Phase 8: 地図・位置情報システム
+- [ ] Amazon Location Service 設定（Place Index, Map）
+- [ ] Geohash ユーティリティ実装
+- [ ] 位置情報登録 Lambda 実装
+- [ ] 近隣チャンネル検索 Lambda 実装
+- [ ] Flutter 地図ウィジェット統合（flutter_map or google_maps_flutter）
+- [ ] 位置情報パーミッション処理
+
+### Phase 9: 高度な機能
 - [ ] Broadcast Code入力UI（暗号化放送対応）
 - [ ] 複数BIS選択UI
-- [ ] AppSync リアルタイム同期
-- [ ] Kinesis イベント収集
+- [ ] プッシュ通知（SNS + FCM）
+- [ ] オフラインモード対応
 
-### Phase 5: リリース準備（Week 9-10）
+### Phase 10: リリース準備
 - [ ] CI/CD パイプライン完成
 - [ ] セキュリティ監査
 - [ ] パフォーマンステスト
+- [ ] 負荷テスト（リスナー数同時接続）
 - [ ] Play Store 申請準備
 
 ---
 
-## 10. 重要な考慮事項
+## 11. 重要な考慮事項
 
-### 10.1 技術的制約
+### 11.1 技術的制約
 
 1. **Extended Advertising必須**: `ScanSettings.setLegacy(false)` を設定しないとAuracast放送を検出できない
 
@@ -1657,7 +3037,7 @@ Point-in-Time Recovery: Enabled
 
 3. **BIG Sync制限**: 同様にBIG Syncもイヤホン側で管理。アプリはBASS経由で指示を出すのみ
 
-### 10.2 互換性マトリクス
+### 11.2 互換性マトリクス
 
 | TWS側要件 | 説明 |
 |-----------|------|
@@ -1665,13 +3045,13 @@ Point-in-Time Recovery: Enabled
 | LE Audio Sink | Broadcast Sink機能対応 |
 | PA Sync対応 | Periodic Advertising受信可能 |
 
-### 10.3 セキュリティベストプラクティス
+### 11.3 セキュリティベストプラクティス
 
 - Broadcast Codeは`flutter_secure_storage`で暗号化保存
 - AWS Secrets Managerで本番APIキー管理
 - GATT通信はBLE暗号化レイヤーで保護
 
-### 10.4 デバッグTips
+### 11.4 デバッグTips
 
 ```bash
 # Android BLE HCI snoop log有効化
