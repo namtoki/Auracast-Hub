@@ -35,6 +35,9 @@ cloud/*.d.ts
 # DevBox
 .devbox/
 
+# MCP server
+.serena/
+
 # OS
 .DS_Store
 Thumbs.db
