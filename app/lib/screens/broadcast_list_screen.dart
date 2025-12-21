@@ -4,7 +4,9 @@ import 'package:permission_handler/permission_handler.dart';
 import '../services/auracast_service.dart';
 
 class BroadcastListScreen extends StatefulWidget {
-  const BroadcastListScreen({super.key});
+  final VoidCallback? onLogout;
+
+  const BroadcastListScreen({super.key, this.onLogout});
 
   @override
   State<BroadcastListScreen> createState() => _BroadcastListScreenState();
@@ -115,6 +117,7 @@ class _BroadcastListScreenState extends State<BroadcastListScreen> {
           ),
         ],
       ),
+      drawer: widget.onLogout != null ? _buildDrawer(context) : null,
       body: Column(
         children: [
           _buildStatusCard(),
@@ -129,6 +132,78 @@ class _BroadcastListScreenState extends State<BroadcastListScreen> {
         icon: Icon(_isScanning ? Icons.stop : Icons.bluetooth_searching),
         label: Text(_isScanning ? 'Stop Scan' : 'Start Scan'),
         backgroundColor: _isScanning ? Colors.red : null,
+      ),
+    );
+  }
+
+  Widget _buildDrawer(BuildContext context) {
+    return Drawer(
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          DrawerHeader(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                const CircleAvatar(
+                  radius: 30,
+                  child: Icon(Icons.person, size: 30),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Auracast Hub',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: Colors.white,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.broadcast_on_personal),
+            title: const Text('Broadcasts'),
+            selected: true,
+            onTap: () {
+              Navigator.pop(context);
+            },
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.logout),
+            title: const Text('Sign Out'),
+            onTap: () {
+              Navigator.pop(context);
+              _showLogoutConfirmation(context);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLogoutConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign Out'),
+        content: const Text('Are you sure you want to sign out?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              widget.onLogout?.call();
+            },
+            child: const Text('Sign Out'),
+          ),
+        ],
       ),
     );
   }

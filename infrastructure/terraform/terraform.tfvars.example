@@ -1,0 +1,21 @@
+# AWS Configuration
+aws_region  = "ap-northeast-1"
+environment = "dev"
+app_name    = "auracast-hub"
+
+# Cognito Password Policy
+cognito_password_minimum_length    = 8
+cognito_password_require_lowercase = true
+cognito_password_require_numbers   = true
+cognito_password_require_symbols   = false
+cognito_password_require_uppercase = true
+
+# MFA Configuration (OFF, ON, OPTIONAL)
+cognito_mfa_configuration = "OPTIONAL"
+
+# Auto-verified attributes
+cognito_auto_verified_attributes = ["email"]
+
+# App callback URLs
+cognito_callback_urls = ["auracasthub://callback"]
+cognito_logout_urls   = ["auracasthub://signout"]
