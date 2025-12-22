@@ -108,6 +108,39 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  Future<void> _handleGoogleLogin() async {
+    await _handleSocialLogin(() => _authService.signInWithGoogle());
+  }
+
+  Future<void> _handleFacebookLogin() async {
+    await _handleSocialLogin(() => _authService.signInWithFacebook());
+  }
+
+  Future<void> _handleAppleLogin() async {
+    await _handleSocialLogin(() => _authService.signInWithApple());
+  }
+
+  Future<void> _handleSocialLogin(Future<AuthResult> Function() signIn) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final result = await signIn();
+
+    setState(() {
+      _isLoading = false;
+    });
+
+    if (result.success && result.nextStep == AuthState.authenticated) {
+      widget.onLoginSuccess();
+    } else if (!result.success) {
+      setState(() {
+        _errorMessage = result.message;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -256,6 +289,47 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 24),
 
+                  // Divider
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: Colors.grey[400])),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'or continue with',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: Colors.grey[400])),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Social login buttons
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _SocialLoginButton(
+                        icon: Icons.g_mobiledata,
+                        label: 'Google',
+                        onPressed: _isLoading ? null : _handleGoogleLogin,
+                      ),
+                      const SizedBox(width: 16),
+                      _SocialLoginButton(
+                        icon: Icons.facebook,
+                        label: 'Facebook',
+                        onPressed: _isLoading ? null : _handleFacebookLogin,
+                      ),
+                      const SizedBox(width: 16),
+                      _SocialLoginButton(
+                        icon: Icons.apple,
+                        label: 'Apple',
+                        onPressed: _isLoading ? null : _handleAppleLogin,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
                   // Sign up link
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -275,6 +349,39 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SocialLoginButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  const _SocialLoginButton({
+    required this.icon,
+    required this.label,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 28),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(fontSize: 12)),
+        ],
       ),
     );
   }

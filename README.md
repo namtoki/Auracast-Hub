@@ -13,10 +13,8 @@ A Flutter Android application for detecting and connecting to Bluetooth LE Audio
 
 - **Android 13 (API 33) or higher** - Required for LE Audio support
 - Bluetooth hardware with LE Audio support
-- [Devbox](https://www.jetify.com/devbox) - Development environment management (auto-installs Flutter SDK, JDK 17)
+- [Devbox](https://www.jetify.com/devbox) - Development environment management (auto-installs Flutter SDK, JDK 17, Terraform, AWS CLI)
 - Android SDK (install via Android Studio)
-- Terraform 1.0.0 or higher (for AWS infrastructure)
-- AWS CLI (configured)
 
 ## Development Environment Setup
 
@@ -45,21 +43,68 @@ The devbox shell automatically sets the `ANDROID_HOME` environment variable and 
 
 ## AWS Infrastructure Setup
 
+### Prerequisites
+
+Configure AWS CLI with IAM Identity Center (SSO):
+
+```bash
+# Initial setup (one-time)
+aws configure sso
+# SSO session name: my-sso
+# SSO start URL: https://<your-org>.awsapps.com/start
+# SSO region: ap-northeast-1
+# Select account and role when prompted
+
+# Login (when session expires)
+aws sso login --profile <your-profile>
+```
+
+Or use access keys (alternative):
+
+```bash
+aws configure
+# AWS Access Key ID: <your-access-key>
+# AWS Secret Access Key: <your-secret-key>
+# Default region name: ap-northeast-1
+```
+
 ### 1. Terraform Configuration
+
+This project uses separate AWS accounts per environment. Each developer creates their own AWS SSO profile for each environment.
 
 ```bash
 cd infrastructure/terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your settings
+
+# Copy environment-specific tfvars
+cp environments/dev.tfvars.example environments/dev.tfvars
+cp environments/staging.tfvars.example environments/staging.tfvars
+cp environments/prod.tfvars.example environments/prod.tfvars
+
+# Edit each file with environment-specific settings
 ```
 
 ### 2. Deploy Infrastructure
 
+Each environment uses its own AWS profile:
+
 ```bash
+cd infrastructure/terraform
 terraform init
-terraform plan
-terraform apply
+
+# Development
+AWS_PROFILE=auracast-dev terraform plan -var-file=environments/dev.tfvars
+AWS_PROFILE=auracast-dev terraform apply -var-file=environments/dev.tfvars
+
+# Staging
+AWS_PROFILE=auracast-staging terraform plan -var-file=environments/staging.tfvars
+AWS_PROFILE=auracast-staging terraform apply -var-file=environments/staging.tfvars
+
+# Production
+AWS_PROFILE=auracast-prod terraform plan -var-file=environments/prod.tfvars
+AWS_PROFILE=auracast-prod terraform apply -var-file=environments/prod.tfvars
 ```
+
+> **Note**: Profile names (auracast-dev, auracast-staging, auracast-prod) are examples. Use whatever profile names you configured with `aws configure sso`.
 
 ### 3. Configure Flutter App
 
@@ -346,9 +391,12 @@ Auracast-Hub/
 │   │   ├── variables.tf          # Variable definitions
 │   │   ├── cognito.tf            # Cognito resources
 │   │   ├── outputs.tf            # Output values
-│   │   └── terraform.tfvars.example
+│   │   └── environments/         # Per-environment configurations
+│   │       ├── dev.tfvars.example
+│   │       ├── staging.tfvars.example
+│   │       └── prod.tfvars.example
 │   └── README.md
-├── devbox.json                   # Devbox environment configuration (Flutter, JDK 17)
+├── devbox.json                   # Devbox environment configuration (Flutter, JDK 17, Terraform, AWS CLI)
 ├── devbox.lock                   # Devbox dependency lock file
 ├── request.md                    # Technical specification
 ├── CLAUDE.md                     # Claude Code guide

@@ -105,6 +105,68 @@ resource "aws_cognito_user_pool" "main" {
   }
 }
 
+# Google Identity Provider
+resource "aws_cognito_identity_provider" "google" {
+  count         = var.enable_google_login ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.main.id
+  provider_name = "Google"
+  provider_type = "Google"
+
+  provider_details = {
+    client_id        = var.google_client_id
+    client_secret    = var.google_client_secret
+    authorize_scopes = "profile email openid"
+  }
+
+  attribute_mapping = {
+    email    = "email"
+    name     = "name"
+    username = "sub"
+  }
+}
+
+# Facebook Identity Provider
+resource "aws_cognito_identity_provider" "facebook" {
+  count         = var.enable_facebook_login ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.main.id
+  provider_name = "Facebook"
+  provider_type = "Facebook"
+
+  provider_details = {
+    client_id        = var.facebook_client_id
+    client_secret    = var.facebook_client_secret
+    authorize_scopes = "public_profile,email"
+  }
+
+  attribute_mapping = {
+    email    = "email"
+    name     = "name"
+    username = "id"
+  }
+}
+
+# Apple Identity Provider
+resource "aws_cognito_identity_provider" "apple" {
+  count         = var.enable_apple_login ? 1 : 0
+  user_pool_id  = aws_cognito_user_pool.main.id
+  provider_name = "SignInWithApple"
+  provider_type = "SignInWithApple"
+
+  provider_details = {
+    client_id        = var.apple_client_id
+    team_id          = var.apple_team_id
+    key_id           = var.apple_key_id
+    private_key      = var.apple_private_key
+    authorize_scopes = "public_profile,email"
+  }
+
+  attribute_mapping = {
+    email    = "email"
+    name     = "name"
+    username = "sub"
+  }
+}
+
 # Cognito User Pool Client (for mobile app)
 resource "aws_cognito_user_pool_client" "mobile_client" {
   name         = "${var.app_name}-${var.environment}-mobile-client"
@@ -135,7 +197,18 @@ resource "aws_cognito_user_pool_client" "mobile_client" {
   ]
 
   # Supported identity providers
-  supported_identity_providers = ["COGNITO"]
+  supported_identity_providers = concat(
+    ["COGNITO"],
+    var.enable_google_login ? ["Google"] : [],
+    var.enable_facebook_login ? ["Facebook"] : [],
+    var.enable_apple_login ? ["SignInWithApple"] : []
+  )
+
+  depends_on = [
+    aws_cognito_identity_provider.google,
+    aws_cognito_identity_provider.facebook,
+    aws_cognito_identity_provider.apple,
+  ]
 
   # Callback and logout URLs
   callback_urls = var.cognito_callback_urls

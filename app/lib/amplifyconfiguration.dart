@@ -4,7 +4,12 @@
 /// ```bash
 /// cd infrastructure/terraform
 /// terraform output flutter_amplify_config
+/// terraform output cognito_domain
 /// ```
+///
+/// For social login, also update:
+/// - socialProviders: Add enabled providers (e.g., ["GOOGLE", "FACEBOOK", "APPLE"])
+/// - OAuth section: Update with your Cognito domain
 
 const amplifyConfig = '''{
   "UserAgent": "aws-amplify-cli/2.0",
@@ -35,7 +40,7 @@ const amplifyConfig = '''{
         "Auth": {
           "Default": {
             "authenticationFlowType": "USER_SRP_AUTH",
-            "socialProviders": [],
+            "socialProviders": ["GOOGLE", "FACEBOOK", "APPLE"],
             "usernameAttributes": ["EMAIL"],
             "signupAttributes": ["EMAIL"],
             "passwordProtectionSettings": {
@@ -48,7 +53,14 @@ const amplifyConfig = '''{
             },
             "mfaConfiguration": "OPTIONAL",
             "mfaTypes": ["TOTP"],
-            "verificationMechanisms": ["EMAIL"]
+            "verificationMechanisms": ["EMAIL"],
+            "OAuth": {
+              "WebDomain": "YOUR_COGNITO_DOMAIN.auth.ap-northeast-1.amazoncognito.com",
+              "AppClientId": "YOUR_APP_CLIENT_ID",
+              "SignInRedirectURI": "auracasthub://callback",
+              "SignOutRedirectURI": "auracasthub://signout",
+              "Scopes": ["email", "openid", "profile"]
+            }
           }
         }
       }

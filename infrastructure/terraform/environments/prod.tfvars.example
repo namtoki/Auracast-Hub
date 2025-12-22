@@ -1,0 +1,42 @@
+# Production Environment
+# Copy to prod.tfvars and update with your settings
+# Usage: AWS_PROFILE=auracast-prod terraform apply -var-file=environments/prod.tfvars
+
+# AWS Configuration
+aws_region  = "ap-northeast-1"
+environment = "prod"
+app_name    = "auracast-hub"
+
+# Cognito Password Policy (stricter for production)
+cognito_password_minimum_length    = 12
+cognito_password_require_lowercase = true
+cognito_password_require_numbers   = true
+cognito_password_require_symbols   = true
+cognito_password_require_uppercase = true
+
+# MFA Configuration (ON recommended for production)
+cognito_mfa_configuration = "ON"
+
+# Auto-verified attributes
+cognito_auto_verified_attributes = ["email"]
+
+# App callback URLs
+cognito_callback_urls = ["auracasthub://callback"]
+cognito_logout_urls   = ["auracasthub://signout"]
+
+# Social Login - Google
+enable_google_login  = false
+google_client_id     = ""
+google_client_secret = ""
+
+# Social Login - Facebook
+enable_facebook_login  = false
+facebook_client_id     = ""
+facebook_client_secret = ""
+
+# Social Login - Apple
+enable_apple_login  = false
+apple_client_id     = ""
+apple_team_id       = ""
+apple_key_id        = ""
+apple_private_key   = ""

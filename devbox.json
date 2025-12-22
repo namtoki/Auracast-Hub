@@ -2,7 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.14.0/.schema/devbox.schema.json",
   "packages": [
     "flutter@latest",
-    "jdk17@latest"
+    "jdk17@latest",
+    "terraform@latest",
+    "awscli2@latest"
   ],
   "shell": {
     "init_hook": [

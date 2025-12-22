@@ -254,6 +254,45 @@ class AuthService {
     }
   }
 
+  /// Sign in with Google
+  Future<AuthResult> signInWithGoogle() async {
+    return _signInWithSocialProvider(AuthProvider.google, 'Google');
+  }
+
+  /// Sign in with Facebook
+  Future<AuthResult> signInWithFacebook() async {
+    return _signInWithSocialProvider(AuthProvider.facebook, 'Facebook');
+  }
+
+  /// Sign in with Apple
+  Future<AuthResult> signInWithApple() async {
+    return _signInWithSocialProvider(AuthProvider.apple, 'Apple');
+  }
+
+  /// Generic social sign-in handler
+  Future<AuthResult> _signInWithSocialProvider(
+    AuthProvider provider,
+    String providerName,
+  ) async {
+    try {
+      final result = await Amplify.Auth.signInWithWebUI(provider: provider);
+
+      if (result.isSignedIn) {
+        _updateState(AuthState.authenticated);
+        return AuthResult.success(
+          message: 'Signed in with $providerName successfully',
+          nextStep: AuthState.authenticated,
+        );
+      } else {
+        return AuthResult.failure('$providerName sign in was not completed');
+      }
+    } on AuthException catch (e) {
+      return AuthResult.failure(_getAuthErrorMessage(e));
+    } catch (e) {
+      return AuthResult.failure('$providerName sign in failed: $e');
+    }
+  }
+
   /// Sign out
   Future<AuthResult> signOut() async {
     try {

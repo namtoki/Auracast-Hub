@@ -70,3 +70,75 @@ variable "cognito_logout_urls" {
   type        = list(string)
   default     = ["auracasthub://signout"]
 }
+
+# Social Login settings
+variable "enable_google_login" {
+  description = "Enable Google federated login"
+  type        = bool
+  default     = false
+}
+
+variable "google_client_id" {
+  description = "Google OAuth Client ID"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth Client Secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "enable_facebook_login" {
+  description = "Enable Facebook federated login"
+  type        = bool
+  default     = false
+}
+
+variable "facebook_client_id" {
+  description = "Facebook App ID"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "facebook_client_secret" {
+  description = "Facebook App Secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "enable_apple_login" {
+  description = "Enable Apple federated login"
+  type        = bool
+  default     = false
+}
+
+variable "apple_client_id" {
+  description = "Apple Services ID"
+  type        = string
+  default     = ""
+}
+
+variable "apple_team_id" {
+  description = "Apple Team ID"
+  type        = string
+  default     = ""
+}
+
+variable "apple_key_id" {
+  description = "Apple Key ID"
+  type        = string
+  default     = ""
+}
+
+variable "apple_private_key" {
+  description = "Apple Private Key (PEM format)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
