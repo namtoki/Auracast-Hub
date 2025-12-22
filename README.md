@@ -13,28 +13,23 @@ Bluetooth LE Audio (Auracast) ブロードキャストを検出・接続する�
 
 - **Android 13 (API 33) 以上** - LE Audio サポートに必須
 - LE Audio 対応の Bluetooth ハードウェア
-- Flutter SDK 3.10.3 以上
-- JDK 17
+- [Devbox](https://www.jetify.com/devbox) - 開発環境管理（Flutter SDK、JDK 17、Android SDK ツールを自動インストール）
 - Terraform 1.0.0 以上（AWS インフラ構築用）
 - AWS CLI（設定済み）
 
 ## 開発環境セットアップ
 
-### Devbox を使用する場合（推奨）
+このプロジェクトは **Devbox** を使用して開発環境を管理しています。
 
 ```bash
 # Devbox がインストールされていない場合
 curl -fsSL https://get.jetify.com/devbox | bash
 
-# 開発環境に入る
+# 開発環境に入る（Flutter SDK、JDK 17 が自動でセットアップされます）
 devbox shell
 ```
 
-### 手動セットアップ
-
-1. [Flutter SDK](https://docs.flutter.dev/get-started/install) をインストール
-2. JDK 17 をインストール
-3. Android SDK をインストール（Android Studio 推奨）
+> **Note**: 以降のコマンドはすべて `devbox shell` 内で実行するか、`devbox run -- <コマンド>` 形式で実行してください。
 
 ## AWS インフラ構築
 
@@ -79,8 +74,12 @@ terraform output flutter_amplify_config
 ### 依存関係のインストール
 
 ```bash
+# devbox shell 内で実行
 cd app
 flutter pub get
+
+# または devbox run を使用
+devbox run -- bash -c "cd app && flutter pub get"
 ```
 
 ### 静的解析
@@ -260,6 +259,18 @@ flutter install
 
 ## トラブルシューティング
 
+### Devbox 環境の問題
+
+```bash
+# Devbox 環境を再構築
+devbox rm
+devbox install
+
+# または shell に再入
+exit
+devbox shell
+```
+
 ### デバイスが認識されない
 
 ```bash
@@ -325,7 +336,8 @@ Auracast-Hub/
 │   │   ├── outputs.tf            # 出力値
 │   │   └── terraform.tfvars.example
 │   └── README.md
-├── devbox.json                   # 開発環境設定
+├── devbox.json                   # Devbox 開発環境設定（Flutter, JDK 17, Android SDK Tools）
+├── devbox.lock                   # Devbox 依存関係ロックファイル
 ├── request.md                    # 技術仕様書
 ├── CLAUDE.md                     # Claude Code 用ガイド
 └── README.md
