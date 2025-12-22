@@ -126,6 +126,25 @@ Example output:
 
 Set these values in the corresponding fields in `amplifyconfiguration.dart`.
 
+### 4. Destroy Infrastructure
+
+To remove all AWS resources:
+
+```bash
+cd infrastructure/terraform
+
+# Development
+AWS_PROFILE=auracast-dev terraform destroy -var-file=environments/dev.tfvars
+
+# Staging
+AWS_PROFILE=auracast-staging terraform destroy -var-file=environments/staging.tfvars
+
+# Production
+AWS_PROFILE=auracast-prod terraform destroy -var-file=environments/prod.tfvars
+```
+
+> **Warning**: This will permanently delete all Cognito users and data. Make sure to backup any important data before destroying.
+
 ## Build
 
 ### Install Dependencies
@@ -386,16 +405,15 @@ Auracast-Hub/
 │   ├── test/
 │   └── pubspec.yaml
 ├── infrastructure/               # AWS infrastructure
-│   ├── terraform/
-│   │   ├── provider.tf           # AWS provider configuration
-│   │   ├── variables.tf          # Variable definitions
-│   │   ├── cognito.tf            # Cognito resources
-│   │   ├── outputs.tf            # Output values
-│   │   └── environments/         # Per-environment configurations
-│   │       ├── dev.tfvars.example
-│   │       ├── staging.tfvars.example
-│   │       └── prod.tfvars.example
-│   └── README.md
+│   └── terraform/
+│       ├── provider.tf           # AWS provider configuration
+│       ├── variables.tf          # Variable definitions
+│       ├── cognito.tf            # Cognito resources
+│       ├── outputs.tf            # Output values
+│       └── environments/         # Per-environment configurations
+│           ├── dev.tfvars.example
+│           ├── staging.tfvars.example
+│           └── prod.tfvars.example
 ├── devbox.json                   # Devbox environment configuration (Flutter, JDK 17, Terraform, AWS CLI)
 ├── devbox.lock                   # Devbox dependency lock file
 ├── request.md                    # Technical specification
