@@ -1,8 +1,12 @@
-# Auracast Assistant + AWSバックエンド開発設計書 v3
+# Auracast Assistant + AWSバックエンド開発設計書 v4
 
-Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバックエンド（東京リージョン ap-northeast-1）と連携するプロジェクトの包括的な技術設計ドキュメントです。
+Flutter（**iOS優先**）でAuracast Assistantアプリを開発し、AWSバックエンド（東京リージョン ap-northeast-1）と連携するプロジェクトの包括的な技術設計ドキュメントです。
 
-**本ドキュメントのアプローチ**: Airoha SDKに依存せず、Android標準BLE API + 接続済みイヤホン側のBASS（Broadcast Audio Scan Service）GATTサービスを使用してアプリ内完結で実装します。
+**本ドキュメントのアプローチ**:
+- **iOS**: CoreBluetooth経由でBASSサービスに直接アクセスし、**Non-Scanning Assistant**アーキテクチャでフル機能を実現
+- **Android**: System API制限によりAuracast接続制御は不可。スキャン＋手動接続ガイドのみ提供
+
+> 📱 **iOS優先の理由**: iOSのCoreBluetooth APIはBASSへのアクセスを制限していないため、サードパーティアプリでもAuracast Assistant機能を完全実装可能。Android 13以降はBASSが@SystemApiとなり、一般アプリからの接続制御は不可能。
 
 ---
 
@@ -10,18 +14,26 @@ Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバッ
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                            AURACAST ASSISTANT ARCHITECTURE v3                                       │
+│                            AURACAST ASSISTANT ARCHITECTURE v4                                       │
 ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ MOBILE (Flutter)                                                                                    │
 │ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
 │ │   UI Layer   │  │   Riverpod   │  │Method Channel│  │    Hive      │  │  Map Widget  │          │
 │ │ Material 3   │◄─┤    State     │◄─┤ Native BLE   │  │Local Storage │  │   地図表示    │          │
+│ │ + Cupertino  │  │              │  │              │  │              │  │              │          │
 │ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘          │
 ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ANDROID NATIVE (Kotlin)                                                                             │
+│ iOS NATIVE (Swift) ★ 主軸プラットフォーム                                                           │
 │ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  │
-│ │  BluetoothLeScanner    │  GATT Client (BASS)  │  PA Sync Manager   │  Location Services      │  │
-│ │  Broadcast Discovery   │  Add Source to Sink  │  BIG Sync Control  │  GPS/Network位置取得    │  │
+│ │  CoreBluetooth      │  BASS GATT Client   │  Non-Scanning      │  CoreLocation           │  │
+│ │  CBCentralManager   │  Read/Write/Notify  │  Assistant         │  位置情報取得            │  │
+│ │  CBPeripheral       │  Control Point操作  │  アーキテクチャ    │                          │  │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ANDROID NATIVE (Kotlin) ※ 制限付きサポート                                                         │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  │
+│ │  BluetoothLeScanner    │  GATT Client (Read Only) │  手動接続ガイド   │  Location Services   │  │
+│ │  Broadcast Discovery   │  ❌ Write制限 (SystemAPI)│  表示のみ         │  GPS/Network位置取得 │  │
 │ └───────────────────────────────────────────────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ AWS BACKEND (ap-northeast-1) - データプレーン                                                       │
@@ -88,102 +100,174 @@ Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバッ
 
 ## 1. Bluetooth LE Audio 実装アーキテクチャ
 
-### 1.1 API制約の整理：一般アプリでできること・できないこと
+### 1.1 プラットフォーム別API制約と戦略
 
-Android 13以降、Auracast関連のAPIには明確な制約があります。
+iOS/Androidで**Auracast Assistant機能の実現可能性が大きく異なる**ことが判明しました。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Auracast API 公開状況一覧                                 │
+│                    プラットフォーム別 BASS API アクセス状況                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ✅ PUBLIC API（一般アプリで使用可能）                                       │
-│  ─────────────────────────────────────────────────────                      │
-│  │ API                              │ 用途                                 │
-│  ├──────────────────────────────────┼────────────────────────────────────┤ │
-│  │ BluetoothLeScanner               │ Auracast放送のスキャン・発見        │ │
-│  │  .startScan(setLegacy=false)     │ Extended Advertising受信           │ │
-│  │ ScanRecord.getServiceData()      │ Broadcast ID, Name取得             │ │
-│  │ BluetoothAdapter.isLeAudio...    │ LE Audio対応確認                   │ │
-│  │ BluetoothGatt (GATT Client)      │ GATT接続・サービス読み取り          │ │
-│  │  .readCharacteristic()           │ Broadcast Receive State読み取り    │ │
-│  └──────────────────────────────────┴────────────────────────────────────┘ │
+│  プラットフォーム          BASSアクセス           対応状況                   │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  iOS (CoreBluetooth)      制限なし ✅             フル機能実装可能          │
+│  Android 13+              @SystemApi ❌           読み取りのみ              │
+│  Samsung One UI 6.1+      システムアプリ内蔵      Galaxy限定                │
+│  Pixel Android 16         システムアプリ内蔵      Pixel 8/9限定             │
 │                                                                             │
-│  ❌ SYSTEM API（システムアプリのみ）                                         │
-│  ─────────────────────────────────────────────────────                      │
-│  │ API                              │ 制限理由                            │
-│  ├──────────────────────────────────┼────────────────────────────────────┤ │
-│  │ BluetoothLeBroadcastAssistant    │ @SystemApi - 接続制御全般          │ │
-│  │  .addSource()                    │ ソース追加不可                      │ │
-│  │  .removeSource()                 │ ソース削除不可                      │ │
-│  │  .getAllSources()                │ 状態取得も不可                      │ │
-│  │ BluetoothLeBroadcast             │ @SystemApi - 放送機能              │ │
-│  │ BASS Control Point Write         │ 実質的にSystem UI経由のみ          │ │
-│  └──────────────────────────────────┴────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ⚠️ グレーゾーン（デバイス実装依存）                                         │
-│  ─────────────────────────────────────────────────────                      │
-│  │ 操作                             │ 成功率     │ 備考                   │
-│  ├──────────────────────────────────┼───────────┼────────────────────────┤│
-│  │ BASS Service発見                 │ 50%       │ 非公開のTWSあり         │ │
-│  │ Broadcast Receive State Read     │ 70%       │ ペアリング済み前提      │ │
-│  │ BASS Control Point Write         │ 10-20%    │ ほぼ動作しない          │ │
-│  └──────────────────────────────────┴───────────┴────────────────────────┘ │
+│  ★ iOS (CoreBluetooth) - 主軸プラットフォーム                               │
+│  ─────────────────────────────────────────────                              │
+│                                                                             │
+│  │ 操作                              │ 可否     │ 備考                    │
+│  ├──────────────────────────────────┼─────────┼─────────────────────────┤ │
+│  │ BASS Service発見                 │ ✅ 可能  │ CBPeripheral経由        │ │
+│  │ Broadcast Receive State Read     │ ✅ 可能  │ 再生中ソース検出        │ │
+│  │ Broadcast Receive State Notify   │ ✅ 可能  │ リアルタイム監視        │ │
+│  │ BASS Control Point Write         │ ✅ 可能  │ ★ Add/Remove Source    │ │
+│  │ QRコード経由接続                  │ ✅ 可能  │ Broadcast Audio URI     │ │
+│  └──────────────────────────────────┴─────────┴─────────────────────────┘ │
+│                                                                             │
+│  ※ Android (BluetoothGatt) - 制限付きサポート                               │
+│  ─────────────────────────────────────────────                              │
+│                                                                             │
+│  │ 操作                              │ 可否     │ 備考                    │
+│  ├──────────────────────────────────┼─────────┼─────────────────────────┤ │
+│  │ Extended ADV スキャン             │ ✅ 可能  │ BluetoothLeScanner     │ │
+│  │ BASS Service発見                 │ ⚠️ 50%   │ デバイス依存            │ │
+│  │ Broadcast Receive State Read     │ ⚠️ 70%   │ ペアリング済み前提       │ │
+│  │ BASS Control Point Write         │ ❌ 不可  │ @SystemApi制限          │ │
+│  └──────────────────────────────────┴─────────┴─────────────────────────┘ │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.2 本設計のアプローチ：再生中ソース検出（読み取り専用）
+### 1.2 本設計のアプローチ：Non-Scanning Assistant (iOS)
 
-**制約を踏まえた現実的なアプローチ**として、Auracast接続の制御は行わず、**「ユーザーが何を聴いているか」を検出する**ことに特化します。
+**Non-Scanning Assistant**は、Bluetooth SIGが「Legacy Smartphone向け」として定義したアーキテクチャです。
+スマートフォン自身がAuracast放送をスキャンするのではなく、**受信デバイス（TWS/補聴器）側にスキャンを委任**します。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    再生中ソース検出アーキテクチャ                            │
+│              Non-Scanning Assistant アーキテクチャ (iOS)                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   ユーザー操作                                                               │
-│   ────────────                                                              │
-│   Android設定画面から手動でAuracast接続（システムUIが制御）                  │
-│                                                                             │
-│   アプリの役割                                                               │
-│   ────────────                                                              │
-│   「何が再生されているか」を検出して表示・記録                               │
+│   利点:                                                                     │
+│   ────                                                                      │
+│   ・Bluetooth 5.2以降のLE Audioハードウェア不要                             │
+│   ・標準BLE GATT操作のみで実装可能                                          │
+│   ・過去10年間のiPhone全モデルで動作可能                                     │
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐  │
 │   │                                                                     │  │
-│   │   [Step 1] スキャン              [Step 2] BASS読み取り              │  │
-│   │   Extended ADV                   GATT経由                          │  │
-│   │        │                              │                             │  │
-│   │        ▼                              ▼                             │  │
-│   │   ┌──────────────┐              ┌──────────────┐                   │  │
-│   │   │ Broadcast ID │              │ Broadcast ID │                   │  │
-│   │   │ + Name       │              │ (再生中)     │                   │  │
-│   │   │ + Metadata   │              │ PA_Sync=0x02 │                   │  │
-│   │   └──────┬───────┘              └──────┬───────┘                   │  │
-│   │          │                             │                            │  │
-│   │          │      [Step 3] 照合          │                            │  │
-│   │          └──────────┬──────────────────┘                            │  │
-│   │                     ▼                                               │  │
-│   │              ┌──────────────┐                                       │  │
-│   │              │ Channel Name │                                       │  │
-│   │              │ 特定完了！   │                                       │  │
-│   │              └──────────────┘                                       │  │
+│   │     Auracast              TWS/補聴器            iPhone App          │  │
+│   │     Broadcast              (Sink)             (Assistant)           │  │
+│   │   ┌──────────┐          ┌──────────┐          ┌──────────┐         │  │
+│   │   │ Extended │ ──────▶ │ 1.スキャン│          │          │         │  │
+│   │   │   ADV    │          │  & 格納  │          │          │         │  │
+│   │   └──────────┘          └────┬─────┘          │          │         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ GATT接続        │          │         │  │
+│   │                              ◀─────────────────┤ 2.Connect│         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ Receive State   │          │         │  │
+│   │                              ├────────────────▶│ 3.読取り │         │  │
+│   │                              │ (発見した放送)  │  & 表示  │         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ Control Point   │          │         │  │
+│   │                              ◀─────────────────┤ 4.接続   │         │  │
+│   │                              │ (Add Source)    │  指示    │         │  │
+│   │                              │                 │          │         │  │
+│   │   ┌──────────┐          ┌────┴─────┐          └──────────┘         │  │
+│   │   │ Broadcast│ ◀─────── │ 5.PA Sync│                               │  │
+│   │   │  Audio   │          │  BIG Sync│                               │  │
+│   │   │ Stream   │ ───────▶ │  再生開始│                               │  │
+│   │   └──────────┘          └──────────┘                               │  │
 │   │                                                                     │  │
 │   └─────────────────────────────────────────────────────────────────────┘  │
 │                                                                             │
 │   処理フロー:                                                                │
-│   1. スキャン: BluetoothLeScanner でAuracast放送一覧を取得                  │
-│      → Map<Broadcast_ID, Channel_Name> を構築                              │
-│   2. BASS読取: ペアリング済みTWSのBroadcast Receive Stateを読み取り         │
-│      → 現在のBroadcast_ID + PA_Sync_State を取得                           │
-│   3. 照合: PA_Sync_State=0x02（Synchronized）のBroadcast_IDでMap照合       │
-│      → 再生中のチャンネル名を特定                                           │
+│   ─────────────                                                             │
+│   1. TWS/補聴器がAuracast放送をスキャンし、Broadcast Receive Stateに格納    │
+│   2. iPhoneアプリがTWS/補聴器にGATT接続                                     │
+│   3. Broadcast Receive State (0x2BC8) を読み取り、発見された放送一覧を表示  │
+│   4. ユーザーが選択 → Control Point (0x2BC7) にAdd Source書き込み          │
+│   5. TWS/補聴器がPA Sync → BIG Sync → 音声再生開始                          │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 重要な技術的ポイント
+### 1.3 対応デバイス（BASS準拠汎用デバイス）
+
+QK Assistantの実績から、**BASS準拠であれば特定メーカーに依存せず動作**することが確認されています。
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    対応デバイスカテゴリ                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  【補聴器】★ 主要ターゲット                                                 │
+│  ──────────────────────────────                                             │
+│  Jabra/Enhance: Enhance Select 500/700, Enhance Pro 20/30                  │
+│  GNヒアリング: ReSound Nexia 5/7/9, Beltone Serene                         │
+│  Starkey: Edge AI, Omega AI, Audibel Vitality AI                           │
+│  その他: Zepp Clarity Omni, Cochlear Baha 7                                │
+│                                                                             │
+│  【TWSイヤホン】                                                            │
+│  ──────────────────────────────                                             │
+│  Sennheiser Momentum TWS 4 (FW更新要)                                      │
+│  EarFun Air Pro 4                                                          │
+│  Samsung Galaxy Buds 2 Pro/3                                               │
+│                                                                             │
+│  【非対応】LE Audio Unicast専用（Auracast非対応）                           │
+│  ──────────────────────────────                                             │
+│  Phonak Infinio Sphere 90, Signia Pure Charge&Go IX, Widex Allure         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 Android向けフォールバック戦略
+
+AndroidではBASS Control Point書き込みが制限されているため、**読み取り専用**のアプローチを採用します。
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Android向け機能（制限付き）                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ✅ 実現可能な機能                                                          │
+│  ─────────────────                                                          │
+│  ・Extended ADVスキャンでAuracast放送一覧を表示                             │
+│  ・BASS Receive State読み取りで再生中チャンネルを検出（成功率: 35%）        │
+│  ・位置情報と組み合わせた施設・イベント情報表示                              │
+│  ・レビュー・評価機能                                                       │
+│                                                                             │
+│  ❌ 実現不可能な機能                                                        │
+│  ─────────────────                                                          │
+│  ・アプリからのAuracast接続制御                                             │
+│  ・ワンタップ接続                                                           │
+│                                                                             │
+│  ユーザーへのガイド                                                         │
+│  ─────────────────                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  📱 Androidをお使いの方へ                                            │   │
+│  │                                                                      │   │
+│  │  このデバイスではAuracast接続はシステム設定から行う必要があります。    │   │
+│  │                                                                      │   │
+│  │  手順:                                                               │   │
+│  │  1. 設定 → Bluetooth → ペアリング済みデバイス                        │   │
+│  │  2. イヤホン名をタップ → 「放送を検索」                              │   │
+│  │  3. 表示された放送を選択して接続                                      │   │
+│  │                                                                      │   │
+│  │  [設定を開く]                                                        │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.5 重要な技術的ポイント
 
 **Broadcast NameはBASSに含まれない**
 
@@ -206,7 +290,7 @@ Android 13以降、Auracast関連のAPIには明確な制約があります。
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.4 Broadcast Receive State データ構造
+### 1.6 Broadcast Receive State データ構造
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -236,7 +320,7 @@ Android 13以降、Auracast関連のAPIには明確な制約があります。
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.5 実現可能性と成功率
+### 1.7 実現可能性と成功率（Android読み取り専用モード）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -263,7 +347,7 @@ Android 13以降、Auracast関連のAPIには明確な制約があります。
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.6 フォールバック戦略
+### 1.8 フォールバック戦略（Android）
 
 BASS読み取りが失敗した場合の代替手段：
 
@@ -296,7 +380,7 @@ BASS読み取りが失敗した場合の代替手段：
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.7 API Level要件
+### 1.9 Android API Level要件
 
 | 機能 | 最小API Level | 対応Android | 備考 |
 |------|---------------|-------------|------|
@@ -305,7 +389,7 @@ BASS読み取りが失敗した場合の代替手段：
 | GATT Client | API 21+ | Android 5+ | 標準BLE API |
 | Auracast Broadcast検出 | API 33+ | Android 13+ | ハードウェア依存 |
 
-### 1.8 AndroidManifest.xml設定
+### 1.10 AndroidManifest.xml設定
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -759,9 +843,388 @@ lambda/
 
 ---
 
-## 5. Kotlin実装コード
+## 5. プラットフォーム別実装コード
 
-### 5.1 Bluetooth UUIDs定義
+---
+
+### 5.A iOS (Swift/CoreBluetooth) 実装 - フル機能
+
+> iOSではCoreBluetooth経由でBASSサービスへのフルアクセスが可能です。
+> QK Assistantの実装から、Non-Scanning Assistant アーキテクチャが実現可能であることが確認されています。
+
+#### 5.A.1 Bluetooth UUIDs定義 (iOS)
+
+```swift
+// BluetoothConstants.swift
+import CoreBluetooth
+
+struct BluetoothConstants {
+    // BASS (Broadcast Audio Scan Service)
+    static let bassServiceUUID = CBUUID(string: "0000184F-0000-1000-8000-00805F9B34FB")
+
+    // BASS Characteristics
+    static let broadcastReceiveStateUUID = CBUUID(string: "00002BC8-0000-1000-8000-00805F9B34FB")
+    static let broadcastAudioScanControlPointUUID = CBUUID(string: "00002BC7-0000-1000-8000-00805F9B34FB")
+
+    // Broadcast Audio Announcement Service (スキャン用)
+    static let broadcastAudioAnnouncementUUID = CBUUID(string: "00001852-0000-1000-8000-00805F9B34FB")
+
+    // PA Sync State Values
+    enum PASyncState: UInt8 {
+        case notSynchronized = 0x00
+        case syncInfoRequest = 0x01
+        case synchronized = 0x02      // ★ 再生中
+        case failed = 0x03
+        case noPAST = 0x04
+    }
+
+    // BASS Control Point Opcodes
+    enum BASSOpcode: UInt8 {
+        case remoteScanStopped = 0x00
+        case remoteScanStarted = 0x01
+        case addSource = 0x02
+        case modifySource = 0x03
+        case setBroadcastCode = 0x04
+        case removeSource = 0x05
+    }
+}
+```
+
+#### 5.A.2 BASS Manager (iOS)
+
+```swift
+// BASSManager.swift
+import CoreBluetooth
+import Combine
+
+class BASSManager: NSObject, ObservableObject {
+    private var centralManager: CBCentralManager!
+    private var connectedPeripheral: CBPeripheral?
+    private var bassService: CBService?
+    private var receiveStateCharacteristic: CBCharacteristic?
+    private var controlPointCharacteristic: CBCharacteristic?
+
+    @Published var connectionState: ConnectionState = .disconnected
+    @Published var receiveStates: [BroadcastReceiveState] = []
+    @Published var errorMessage: String?
+
+    enum ConnectionState {
+        case disconnected, connecting, connected, discoveringServices, ready
+    }
+
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    // ペアリング済みデバイスに接続
+    func connectToDevice(_ peripheral: CBPeripheral) {
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        connectionState = .connecting
+        centralManager.connect(peripheral, options: nil)
+    }
+
+    // Broadcast Receive State を読み取り
+    func readBroadcastReceiveState() {
+        guard let characteristic = receiveStateCharacteristic else {
+            errorMessage = "Receive State characteristic not found"
+            return
+        }
+        connectedPeripheral?.readValue(for: characteristic)
+    }
+
+    // Add Source コマンドを送信 (Non-Scanning Assistant)
+    func addSource(broadcast: DiscoveredBroadcast) {
+        guard let controlPoint = controlPointCharacteristic else {
+            errorMessage = "Control Point characteristic not found"
+            return
+        }
+
+        let payload = buildAddSourcePayload(broadcast: broadcast)
+        connectedPeripheral?.writeValue(payload, for: controlPoint, type: .withResponse)
+    }
+
+    // Remove Source コマンドを送信
+    func removeSource(sourceId: UInt8) {
+        guard let controlPoint = controlPointCharacteristic else {
+            errorMessage = "Control Point characteristic not found"
+            return
+        }
+
+        var data = Data()
+        data.append(BluetoothConstants.BASSOpcode.removeSource.rawValue)
+        data.append(sourceId)
+
+        connectedPeripheral?.writeValue(data, for: controlPoint, type: .withResponse)
+    }
+
+    private func buildAddSourcePayload(broadcast: DiscoveredBroadcast) -> Data {
+        var data = Data()
+
+        // Opcode: Add Source (0x02)
+        data.append(BluetoothConstants.BASSOpcode.addSource.rawValue)
+
+        // Advertiser Address Type (1 octet)
+        data.append(broadcast.addressType)
+
+        // Advertiser Address (6 octets, little-endian)
+        data.append(contentsOf: broadcast.addressBytes)
+
+        // Advertising SID (1 octet)
+        data.append(broadcast.advertisingSID)
+
+        // Broadcast ID (3 octets, little-endian)
+        data.append(contentsOf: broadcast.broadcastIdBytes)
+
+        // PA_Sync (1 octet): 0x01 = Sync to PA
+        data.append(0x01)
+
+        // PA_Interval (2 octets): 0xFFFF = Unknown
+        data.append(0xFF)
+        data.append(0xFF)
+
+        // Num_Subgroups (1 octet): 1
+        data.append(0x01)
+
+        // BIS_Sync (4 octets): 0xFFFFFFFF = Sync all
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
+
+        // Metadata_Length (1 octet): 0
+        data.append(0x00)
+
+        return data
+    }
+}
+
+// MARK: - CBCentralManagerDelegate
+extension BASSManager: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state != .poweredOn {
+            connectionState = .disconnected
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        connectionState = .discoveringServices
+        peripheral.discoverServices([BluetoothConstants.bassServiceUUID])
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        connectionState = .disconnected
+        errorMessage = error?.localizedDescription
+    }
+}
+
+// MARK: - CBPeripheralDelegate
+extension BASSManager: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+
+        for service in services {
+            if service.uuid == BluetoothConstants.bassServiceUUID {
+                bassService = service
+                peripheral.discoverCharacteristics([
+                    BluetoothConstants.broadcastReceiveStateUUID,
+                    BluetoothConstants.broadcastAudioScanControlPointUUID
+                ], for: service)
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let characteristics = service.characteristics else { return }
+
+        for characteristic in characteristics {
+            switch characteristic.uuid {
+            case BluetoothConstants.broadcastReceiveStateUUID:
+                receiveStateCharacteristic = characteristic
+                // Notifyを有効化
+                peripheral.setNotifyValue(true, for: characteristic)
+                // 初回読み取り
+                peripheral.readValue(for: characteristic)
+
+            case BluetoothConstants.broadcastAudioScanControlPointUUID:
+                controlPointCharacteristic = characteristic
+
+            default:
+                break
+            }
+        }
+
+        if receiveStateCharacteristic != nil && controlPointCharacteristic != nil {
+            connectionState = .ready
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == BluetoothConstants.broadcastReceiveStateUUID,
+              let data = characteristic.value else { return }
+
+        if let receiveState = parseBroadcastReceiveState(data: data) {
+            // 既存のstateを更新または追加
+            if let index = receiveStates.firstIndex(where: { $0.sourceId == receiveState.sourceId }) {
+                receiveStates[index] = receiveState
+            } else {
+                receiveStates.append(receiveState)
+            }
+        }
+    }
+
+    private func parseBroadcastReceiveState(data: Data) -> BroadcastReceiveState? {
+        guard data.count >= 13 else { return nil }
+
+        let sourceId = data[0]
+        let addressType = data[1]
+        let sourceAddress = Data(data[2..<8])
+        let advSID = data[8]
+        let broadcastId = (UInt32(data[9]) | (UInt32(data[10]) << 8) | (UInt32(data[11]) << 16))
+        let paSyncState = BluetoothConstants.PASyncState(rawValue: data[12]) ?? .notSynchronized
+
+        return BroadcastReceiveState(
+            sourceId: sourceId,
+            addressType: addressType,
+            sourceAddress: sourceAddress,
+            advertisingSID: advSID,
+            broadcastId: broadcastId,
+            paSyncState: paSyncState,
+            rawData: data
+        )
+    }
+}
+```
+
+#### 5.A.3 データモデル (iOS)
+
+```swift
+// Models.swift
+import Foundation
+
+struct BroadcastReceiveState {
+    let sourceId: UInt8
+    let addressType: UInt8
+    let sourceAddress: Data
+    let advertisingSID: UInt8
+    let broadcastId: UInt32
+    let paSyncState: BluetoothConstants.PASyncState
+    let rawData: Data
+
+    var isSynchronized: Bool {
+        paSyncState == .synchronized
+    }
+}
+
+struct DiscoveredBroadcast: Identifiable {
+    let id = UUID()
+    let name: String
+    let broadcastId: UInt32
+    let addressType: UInt8
+    let addressBytes: [UInt8]
+    let advertisingSID: UInt8
+    let rssi: Int
+    let timestamp: Date
+
+    var broadcastIdBytes: [UInt8] {
+        [
+            UInt8(broadcastId & 0xFF),
+            UInt8((broadcastId >> 8) & 0xFF),
+            UInt8((broadcastId >> 16) & 0xFF)
+        ]
+    }
+}
+```
+
+#### 5.A.4 Auracast Assistant ViewModel (iOS)
+
+```swift
+// AuracastAssistantViewModel.swift
+import SwiftUI
+import Combine
+
+@MainActor
+class AuracastAssistantViewModel: ObservableObject {
+    private let bassManager = BASSManager()
+    private var cancellables = Set<AnyCancellable>()
+
+    @Published var pairedDevices: [PairedDevice] = []
+    @Published var selectedDevice: PairedDevice?
+    @Published var discoveredBroadcasts: [DiscoveredBroadcast] = []
+    @Published var currentlyPlaying: DiscoveredBroadcast?
+    @Published var isConnecting = false
+    @Published var errorMessage: String?
+
+    init() {
+        setupBindings()
+    }
+
+    private func setupBindings() {
+        bassManager.$receiveStates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] states in
+                self?.updateCurrentlyPlaying(from: states)
+            }
+            .store(in: &cancellables)
+
+        bassManager.$connectionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.isConnecting = (state == .connecting || state == .discoveringServices)
+            }
+            .store(in: &cancellables)
+
+        bassManager.$errorMessage
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$errorMessage)
+    }
+
+    private func updateCurrentlyPlaying(from receiveStates: [BroadcastReceiveState]) {
+        // 同期中（再生中）のソースを探す
+        guard let syncedState = receiveStates.first(where: { $0.isSynchronized }) else {
+            currentlyPlaying = nil
+            return
+        }
+
+        // スキャン結果とBroadcast IDをマッチング
+        currentlyPlaying = discoveredBroadcasts.first { broadcast in
+            broadcast.broadcastId == syncedState.broadcastId
+        }
+    }
+
+    // TWS/補聴器に接続
+    func connectToReceiver(_ device: PairedDevice) {
+        selectedDevice = device
+        bassManager.connectToDevice(device.peripheral)
+    }
+
+    // Auracast放送に接続（Add Source）
+    func connectToBroadcast(_ broadcast: DiscoveredBroadcast) {
+        bassManager.addSource(broadcast: broadcast)
+    }
+
+    // 現在の放送から切断（Remove Source）
+    func disconnectFromBroadcast() {
+        guard let state = bassManager.receiveStates.first(where: { $0.isSynchronized }) else {
+            return
+        }
+        bassManager.removeSource(sourceId: state.sourceId)
+    }
+}
+
+struct PairedDevice: Identifiable {
+    let id = UUID()
+    let name: String
+    let peripheral: CBPeripheral
+}
+```
+
+---
+
+### 5.B Android (Kotlin) 実装 - 読み取り専用モード
+
+> AndroidではBASS Control Point書き込みが`@SystemApi`制限されているため、
+> 読み取り専用のアプローチを採用します。接続制御はシステム設定画面から行います。
+
+#### 5.B.1 Bluetooth UUIDs定義 (Android)
 
 ```kotlin
 // bluetooth/BluetoothUuids.kt
@@ -792,7 +1255,7 @@ object BluetoothUuids {
 }
 ```
 
-### 5.2 Broadcast Source スキャナー
+#### 5.B.2 Broadcast Source スキャナー (Android)
 
 ```kotlin
 // bluetooth/AuracastScanner.kt
@@ -904,7 +1367,7 @@ class AuracastScanner(
 class ScanException(message: String) : Exception(message)
 ```
 
-### 5.3 BASS GATT Manager
+#### 5.B.3 BASS GATT Manager (Android)
 
 > ⚠️ **重要な制約について**
 >
@@ -1318,7 +1781,7 @@ class BassGattManager(
 }
 ```
 
-### 5.4 再生中ソース検出ロジック（Broadcast ID照合）
+#### 5.B.4 再生中ソース検出ロジック（Broadcast ID照合）(Android)
 
 スキャン結果とBASS読み取り結果を照合して、現在再生中のチャンネル名を特定します。
 
@@ -1469,7 +1932,7 @@ sealed class DetectionState {
 }
 ```
 
-### 5.5 Flutter Method Channel Plugin
+#### 5.B.5 Flutter Method Channel Plugin (Android)
 
 ```kotlin
 // plugins/AuracastPlugin.kt
