@@ -1,94 +1,407 @@
-# Auracast Assistant + AWSバックエンド開発設計書 v2
+# Auracast Assistant + AWSバックエンド開発設計書 v5
 
-Flutter（Android優先）でAuracast Assistantアプリを開発し、AWSバックエンド（東京リージョン ap-northeast-1）と連携するプロジェクトの包括的な技術設計ドキュメントです。
+FlutterでAuracast Assistantアプリを開発し、AWSバックエンド（東京リージョン ap-northeast-1）と連携するプロジェクトの包括的な技術設計ドキュメントです。
 
-**本ドキュメントのアプローチ**: Airoha SDKに依存せず、Android標準BLE API + 接続済みイヤホン側のBASS（Broadcast Audio Scan Service）GATTサービスを使用してアプリ内完結で実装します。
+**本ドキュメントのアプローチ**:
+- **iOS/Android共通**: 標準GATT API経由でBASSサービスに直接アクセスし、**Non-Scanning Assistant**アーキテクチャでフル機能を実現
+
+> 🔍 **重要な発見**: `@SystemApi`制限は高レベルAPI（`BluetoothLeBroadcastAssistant`）に適用されますが、
+> **標準GATT API（`BluetoothGatt.writeCharacteristic()`）は制限されていません**。
+> iOS（CoreBluetooth）とAndroid（BluetoothGatt）の両方で同等のフル機能実装が可能です（Androidは要実機検証）。
 
 ---
 
 ## アーキテクチャ全体像
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      AURACAST ASSISTANT ARCHITECTURE                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ MOBILE (Flutter)                                                            │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │   UI Layer   │  │   Riverpod   │  │Method Channel│  │    Hive      │    │
-│ │ Material 3   │◄─┤    State     │◄─┤ Native BLE   │  │Local Storage │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ ANDROID NATIVE (Kotlin)                                                     │
-│ ┌──────────────────────────────────────────────────────────────────────┐   │
-│ │  BluetoothLeScanner    │  GATT Client (BASS)  │  PA Sync Manager    │   │
-│ │  Broadcast Discovery   │  Add Source to Sink  │  BIG Sync Control   │   │
-│ └──────────────────────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ AWS BACKEND (ap-northeast-1)                                                │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │ CloudFront   │  │ API Gateway  │  │   AppSync    │  │   Cognito    │    │
-│ │ + S3 Static  │  │  REST API    │  │   GraphQL    │  │  User Auth   │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-│        │                 │                 │                 │              │
-│        ▼                 ▼                 ▼                 ▼              │
-│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│ │    Lambda    │  │  DynamoDB    │  │   Kinesis    │  │ Personalize  │    │
-│ │  Functions   │  │ Single-Table │  │  Firehose    │  │   ML Recs    │    │
-│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            AURACAST ASSISTANT ARCHITECTURE v4                                       │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ MOBILE (Flutter)                                                                                    │
+│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│ │   UI Layer   │  │   Riverpod   │  │Method Channel│  │    Hive      │  │  Map Widget  │          │
+│ │ Material 3   │◄─┤    State     │◄─┤ Native BLE   │  │Local Storage │  │   地図表示    │          │
+│ │ + Cupertino  │  │              │  │              │  │              │  │              │          │
+│ └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘          │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ iOS NATIVE (Swift)                                                                                 │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  │
+│ │  CoreBluetooth      │  BASS GATT Client   │  Non-Scanning      │  CoreLocation           │  │
+│ │  CBCentralManager   │  Read/Write/Notify  │  Assistant         │  位置情報取得            │  │
+│ │  CBPeripheral       │  Control Point操作  │  アーキテクチャ    │                          │  │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ANDROID NATIVE (Kotlin) ★ GATT直接操作でフル機能実装可能（要実機検証）                              │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐  │
+│ │  BluetoothLeScanner    │  BluetoothGatt         │  Non-Scanning      │  Location Services   │  │
+│ │  Extended ADVスキャン  │  ✅ Read/Write/Notify  │  Assistant         │  GPS/Network位置取得 │  │
+│ │  ★ iOSより優位        │  Control Point操作     │  アーキテクチャ    │                      │  │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ AWS BACKEND (ap-northeast-1) - データプレーン                                                       │
+│                                                                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────────────────────┐    │
+│  │                              API Layer (統合エンドポイント)                                  │    │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │    │
+│  │  │ CloudFront   │  │ API Gateway  │  │   AppSync    │  │  WebSocket   │                   │    │
+│  │  │    CDN       │  │  REST API    │  │   GraphQL    │  │  API (リアル  │                   │    │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │   タイム)    │                   │    │
+│  │         │                 │                 │          └──────────────┘                   │    │
+│  └─────────┼─────────────────┼─────────────────┼────────────────┼────────────────────────────┘    │
+│            │                 │                 │                │                                  │
+│  ┌─────────┼─────────────────┼─────────────────┼────────────────┼────────────────────────────┐    │
+│  │         ▼                 ▼                 ▼                ▼                             │    │
+│  │  ┌──────────────────────────────────────────────────────────────────────────────────────┐ │    │
+│  │  │                              Lambda Functions                                         │ │    │
+│  │  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐         │ │    │
+│  │  │  │ユーザー管理│ │チャンネル  │ │レビュー    │ │再生人数    │ │地図・位置  │         │ │    │
+│  │  │  │ Lambda     │ │管理 Lambda │ │処理 Lambda │ │集計 Lambda │ │検索 Lambda │         │ │    │
+│  │  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘ └────────────┘         │ │    │
+│  │  └──────────────────────────────────────────────────────────────────────────────────────┘ │    │
+│  │                                          │                                                │    │
+│  │  ┌───────────────────────────────────────┴────────────────────────────────────────────┐  │    │
+│  │  │                              Data Layer                                             │  │    │
+│  │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │  │    │
+│  │  │  │  DynamoDB    │  │ ElastiCache  │  │  OpenSearch  │  │     S3       │           │  │    │
+│  │  │  │ Single-Table │  │   (Redis)    │  │  Service     │  │  Data Lake   │           │  │    │
+│  │  │  │ ユーザー/    │  │ リアルタイム │  │ 口コミ検索   │  │  分析データ  │           │  │    │
+│  │  │  │ チャンネル/  │  │ カウンター   │  │ 全文検索     │  │  保存        │           │  │    │
+│  │  │  │ レビュー     │  └──────────────┘  └──────────────┘  └──────────────┘           │  │    │
+│  │  │  └──────────────┘                                                                   │  │    │
+│  │  └────────────────────────────────────────────────────────────────────────────────────┘  │    │
+│  │                                                                                           │    │
+│  └───────────────────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                                     │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ AWS BACKEND (ap-northeast-1) - 認証・分析プレーン                                                   │
+│                                                                                                     │
+│  ┌───────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │                              Authentication & ML Layer                                        │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │ │
+│  │  │   Cognito    │  │ Personalize  │  │  Comprehend  │  │   Kinesis    │  │  Location    │   │ │
+│  │  │  User Pools  │  │  ML推薦      │  │  感情分析    │  │  Data Stream │  │   Service    │   │ │
+│  │  │  ユーザー認証│  │  エンジン    │  │  テキスト    │  │  イベント    │  │  地図・位置  │   │ │
+│  │  │  ソーシャル  │  │              │  │  分類        │  │  ストリーム  │  │  検索        │   │ │
+│  │  │  ログイン    │  │              │  │              │  │              │  │              │   │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │ │
+│  │         │                 │                 │                 │                │            │ │
+│  │         │                 │                 │                 │                │            │ │
+│  │         ▼                 ▼                 ▼                 ▼                ▼            │ │
+│  │  ┌──────────────────────────────────────────────────────────────────────────────────────┐  │ │
+│  │  │                              EventBridge (イベント駆動)                               │  │ │
+│  │  │  ユーザー登録完了 → プロファイル作成                                                   │  │ │
+│  │  │  チャンネル選択 → レコメンド更新                                                       │  │ │
+│  │  │  レビュー投稿 → 感情分析実行                                                          │  │ │
+│  │  │  再生開始/終了 → リスナー数更新                                                        │  │ │
+│  │  └──────────────────────────────────────────────────────────────────────────────────────┘  │ │
+│  └───────────────────────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 1. Bluetooth LE Audio 実装アーキテクチャ
 
-### 1.1 重要な区別：システムBASS vs イヤホン側BASS
+### 1.1 プラットフォーム別API制約と戦略
 
-Android 13以降、`BluetoothLeBroadcastAssistant`（システムレベルのBroadcast Assistant API）はシステムアプリのみに制限されています。**しかし**、これは接続済みイヤホン（Sink）側のBASS GATTサービスへのアクセス制限とは異なります。
+**重要な発見**: `@SystemApi`制限は高レベルAPI（BluetoothLeBroadcastAssistant）に適用されますが、
+**標準GATT API（BluetoothGatt）経由のBASS操作は制限されていません**。
+iOS/Android両方で**Non-Scanning Assistant**のフル機能実装が可能です。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         BASS アクセスの区別                                  │
+│                    プラットフォーム別 BASS API アクセス状況                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ❌ BluetoothLeBroadcastAssistant API (システムレベル)                       │
-│     - Android 13+ でサードパーティアプリからアクセス不可                       │
-│     - システムUIが使用                                                       │
+│  @SystemApi制限の正確な範囲:                                                 │
+│  ────────────────────────────                                               │
+│  ❌ BluetoothLeBroadcastAssistant (Android高レベルAPI) → 制限あり           │
+│  ✅ BluetoothGatt.writeCharacteristic() (標準GATT) → 制限なし              │
+│  ✅ CoreBluetooth (iOS標準GATT) → 制限なし                                  │
 │                                                                             │
-│  ✅ イヤホン側 BASS GATT Service (デバイスレベル)                            │
-│     - 接続済みBLEデバイスのGATTサービスとして公開                             │
-│     - 標準BluetoothGatt APIでアクセス可能                                   │
-│     - サードパーティアプリから操作可能                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ★ 両プラットフォームで同等の機能が実現可能                                   │
+│  ─────────────────────────────────────────────                              │
+│                                                                             │
+│  │ 操作                              │ iOS        │ Android     │ 方式    │
+│  ├──────────────────────────────────┼───────────┼────────────┼─────────┤│
+│  │ BASS Service発見                 │ ✅ 可能    │ ✅ 可能    │ GATT    ││
+│  │ Broadcast Receive State Read     │ ✅ 可能    │ ✅ 可能    │ GATT    ││
+│  │ Broadcast Receive State Notify   │ ✅ 可能    │ ✅ 可能    │ GATT    ││
+│  │ BASS Control Point Write         │ ✅ 可能    │ ✅ 可能※   │ GATT    ││
+│  │ Extended ADV スキャン            │ ❌ 不可    │ ✅ 可能    │ Scanner ││
+│  └──────────────────────────────────┴───────────┴────────────┴─────────┘│
+│                                                                             │
+│  ※ Android: BluetoothGatt経由の直接Write（要実機検証）                       │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  検証が必要なポイント:                                                       │
+│  ──────────────────────                                                     │
+│  ・TWS側がサードパーティアプリからのGATT Writeを受け入れるか                   │
+│  ・ペアリング/ボンディング要件                                               │
+│  ・暗号化接続の要否                                                          │
+│  ・実際のAiroha/Qualcomm TWS での動作確認                                    │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.2 本設計のアプローチ
+### 1.2 本設計のアプローチ：Non-Scanning Assistant (iOS/Android共通)
+
+**Non-Scanning Assistant**は、Bluetooth SIGが「Legacy Smartphone向け」として定義したアーキテクチャです。
+スマートフォン自身がAuracast放送をスキャンするのではなく、**受信デバイス（TWS/補聴器）側にスキャンを委任**します。
+
+**iOS/Android両方で同一アーキテクチャが実現可能**であることが判明しました（標準GATT API使用）。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    アプリ内完結アーキテクチャ                                 │
+│              Non-Scanning Assistant アーキテクチャ (iOS/Android)            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   ┌─────────────┐      ┌─────────────┐      ┌─────────────┐                │
-│   │  Broadcast  │      │   Denon     │      │  Denon TWS  │                │
-│   │   Source    │ ───► │    App      │ ───► │  (Sink)     │                │
-│   │  (Auracast) │      │ (Assistant) │      │             │                │
-│   └─────────────┘      └─────────────┘      └─────────────┘                │
-│         │                    │                    │                         │
-│         │                    │                    │                         │
-│    Extended ADV         GATT経由で           BASS GATT                      │
-│    (BAAS UUID)          接続指示             Service                        │
+│   利点:                                                                     │
+│   ────                                                                      │
+│   ・Bluetooth 5.2以降のLE Audioハードウェア不要                             │
+│   ・標準BLE GATT操作のみで実装可能（iOS: CoreBluetooth / Android: BluetoothGatt）│
+│   ・iOS: 過去10年間の全モデルで動作 / Android: BLE対応端末で動作            │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐  │
+│   │                                                                     │  │
+│   │     Auracast              TWS/補聴器          スマホアプリ          │  │
+│   │     Broadcast              (Sink)           (Assistant)             │  │
+│   │   ┌──────────┐          ┌──────────┐          ┌──────────┐         │  │
+│   │   │ Extended │ ──────▶ │ 1.スキャン│          │          │         │  │
+│   │   │   ADV    │          │  & 格納  │          │          │         │  │
+│   │   └──────────┘          └────┬─────┘          │          │         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ GATT接続        │          │         │  │
+│   │                              ◀─────────────────┤ 2.Connect│         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ Receive State   │          │         │  │
+│   │                              ├────────────────▶│ 3.読取り │         │  │
+│   │                              │ (発見した放送)  │  & 表示  │         │  │
+│   │                              │                 │          │         │  │
+│   │                              │ Control Point   │          │         │  │
+│   │                              ◀─────────────────┤ 4.接続   │         │  │
+│   │                              │ (Add Source)    │  指示    │         │  │
+│   │                              │                 │          │         │  │
+│   │   ┌──────────┐          ┌────┴─────┐          └──────────┘         │  │
+│   │   │ Broadcast│ ◀─────── │ 5.PA Sync│                               │  │
+│   │   │  Audio   │          │  BIG Sync│                               │  │
+│   │   │ Stream   │ ───────▶ │  再生開始│                               │  │
+│   │   └──────────┘          └──────────┘                               │  │
+│   │                                                                     │  │
+│   └─────────────────────────────────────────────────────────────────────┘  │
 │                                                                             │
 │   処理フロー:                                                                │
-│   1. スキャン: BluetoothLeScanner + ScanFilter (BAAS UUID: 0x1852)          │
-│   2. 選択UI: アプリ内で独自UI表示                                            │
-│   3. 接続指示: イヤホン側BASS GATTのControl Point経由                        │
+│   ─────────────                                                             │
+│   1. TWS/補聴器がAuracast放送をスキャンし、Broadcast Receive Stateに格納    │
+│   2. スマホアプリがTWS/補聴器にGATT接続                                     │
+│   3. Broadcast Receive State (0x2BC8) を読み取り、発見された放送一覧を表示  │
+│   4. ユーザーが選択 → Control Point (0x2BC7) にAdd Source書き込み          │
+│   5. TWS/補聴器がPA Sync → BIG Sync → 音声再生開始                          │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.3 API Level要件
+### 1.3 対応デバイス（BASS準拠汎用デバイス）
+
+QK Assistantの実績から、**BASS準拠であれば特定メーカーに依存せず動作**することが確認されています。
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    対応デバイスカテゴリ                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  【補聴器】★ 主要ターゲット                                                 │
+│  ──────────────────────────────                                             │
+│  Jabra/Enhance: Enhance Select 500/700, Enhance Pro 20/30                  │
+│  GNヒアリング: ReSound Nexia 5/7/9, Beltone Serene                         │
+│  Starkey: Edge AI, Omega AI, Audibel Vitality AI                           │
+│  その他: Zepp Clarity Omni, Cochlear Baha 7                                │
+│                                                                             │
+│  【TWSイヤホン】                                                            │
+│  ──────────────────────────────                                             │
+│  Sennheiser Momentum TWS 4 (FW更新要)                                      │
+│  EarFun Air Pro 4                                                          │
+│  Samsung Galaxy Buds 2 Pro/3                                               │
+│                                                                             │
+│  【非対応】LE Audio Unicast専用（Auracast非対応）                           │
+│  ──────────────────────────────                                             │
+│  Phonak Infinio Sphere 90, Signia Pure Charge&Go IX, Widex Allure         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 Android実装戦略（GATT直接操作）
+
+**新発見**: `@SystemApi`制限は`BluetoothLeBroadcastAssistant`クラスに適用されますが、
+**標準の`BluetoothGatt` APIは制限されていません**。iOSと同様のフル機能実装が可能です。
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Android実装アプローチ（GATT直接操作）                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  実装方式の比較:                                                             │
+│  ──────────────                                                             │
+│                                                                             │
+│  │ 方式                             │ 状態     │ 備考                     │
+│  ├─────────────────────────────────┼──────────┼──────────────────────────┤│
+│  │ BluetoothLeBroadcastAssistant   │ ❌ 制限  │ @SystemApi (Android 13+) ││
+│  │ BluetoothGatt.writeCharacteristic│ ✅ 公開  │ 標準GATT API             ││
+│  └─────────────────────────────────┴──────────┴──────────────────────────┘│
+│                                                                             │
+│  BluetoothGatt経由で実現可能な機能:                                          │
+│  ────────────────────────────────────                                       │
+│  ✅ BASS Service発見 (UUID: 0x184F)                                         │
+│  ✅ Broadcast Receive State Read/Notify (UUID: 0x2BC8)                       │
+│  ✅ BASS Control Point Write (UUID: 0x2BC7) ← ★ Add/Remove Source          │
+│  ✅ Extended ADVスキャン (BluetoothLeScanner)                                │
+│                                                                             │
+│  Androidの追加メリット:                                                      │
+│  ─────────────────────                                                      │
+│  ・Extended Advertisingスキャンが可能（iOSでは不可）                         │
+│  ・TWS側のスキャン結果に依存せず、アプリ側で放送を発見可能                    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  実機検証が必要なポイント:                                                   │
+│  ────────────────────────                                                   │
+│  ・TWS/補聴器がサードパーティアプリからのGATT Writeを受け入れるか             │
+│  ・ボンディング（ペアリング）要件の確認                                       │
+│  ・暗号化接続（Encrypted Link）の要否                                        │
+│  ・Airoha / Qualcomm / BES チップ別の動作検証                                │
+│                                                                             │
+│  フォールバック戦略（GATT Writeが失敗した場合）:                              │
+│  ────────────────────────────────────────────                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  GATT Write失敗時の代替手段                                          │   │
+│  │                                                                      │   │
+│  │  1. システム設定への誘導                                              │   │
+│  │     設定 → Bluetooth → デバイス → 「放送を検索」                      │   │
+│  │                                                                      │   │
+│  │  2. QRコード/NFC経由の接続（施設側で提供）                            │   │
+│  │                                                                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.5 重要な技術的ポイント
+
+**Broadcast NameはBASSに含まれない**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ データ取得元の整理                                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  │ データ                    │ 取得元                      │ 備考         │
+│  ├──────────────────────────┼────────────────────────────┼──────────────┤│
+│  │ Broadcast ID (3 bytes)   │ Extended ADV スキャン       │ 放送識別子   │ │
+│  │ Broadcast Name           │ Extended ADV スキャン       │ チャンネル名 │ │
+│  │ Broadcast ID (再生中)    │ BASS Broadcast Receive State│ TWS側の状態  │ │
+│  │ PA_Sync_State            │ BASS Broadcast Receive State│ 同期状態     │ │
+│  └──────────────────────────┴────────────────────────────┴──────────────┘ │
+│                                                                             │
+│  ※ BASSからはBroadcast IDのみ取得可能。Nameは含まれないため、                │
+│    スキャン結果とのマッチングが必須。                                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.6 Broadcast Receive State データ構造
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Broadcast Receive State Characteristic (UUID: 0x2BC8)                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Offset  Size   Field                    Description                        │
+│  ──────  ────   ─────                    ───────────                        │
+│  0       1      Source_ID                ソース識別子                        │
+│  1       1      Source_Address_Type      0x00=Public, 0x01=Random           │
+│  2       6      Source_Address           放送元BTアドレス                    │
+│  8       1      Source_Adv_SID           Advertising SID (0x00-0x0F)        │
+│  9       3      Broadcast_ID             ★ 24-bit放送識別子（照合キー）      │
+│  12      1      PA_Sync_State            ★ 同期状態（下記参照）             │
+│  13      1      BIG_Encryption           暗号化状態                         │
+│  14      1      Num_Subgroups            サブグループ数                      │
+│  15+     var    Subgroup entries         BIS_Sync + Metadata                │
+│                                                                             │
+│  PA_Sync_State 値:                                                          │
+│  ─────────────────                                                          │
+│  0x00 = Not synchronized      （未接続）                                     │
+│  0x01 = SyncInfo Request      （同期要求中）                                 │
+│  0x02 = Synchronized          ★ 再生中                                     │
+│  0x03 = Failed                （同期失敗）                                   │
+│  0x04 = No PAST               （PAST未使用）                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.7 実現可能性と成功率（Android読み取り専用モード）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 成功率分析                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Step                           成功率    累積成功率   備考                 │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  1. スキャンでMap作成            98%      98%         Public API           │
+│  2. GATT接続                     95%      93%         ペアリング済み前提   │
+│  3. BASS Service発見             50%      47%         デバイス依存         │
+│  4. Characteristic読み取り       80%      37%         暗号化要件あり       │
+│  5. PA_Sync判定                  95%      35%         仕様通り             │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  汎用TWS全体での成功率: 約 35%                                              │
+│  BASS実装済みTWSに限定: 約 70-80%                                           │
+│                                                                             │
+│  対応デバイスカテゴリ別:                                                     │
+│  ├── 主要メーカー最新LE Audio TWS: 30-40%                                   │
+│  ├── 補聴器（LE Audio対応）: 20-30%                                         │
+│  ├── 中国系/OEM TWS: 40-50%                                                │
+│  └── 開発キット/リファレンス機器: 70-80%                                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.8 フォールバック戦略（Android）
+
+BASS読み取りが失敗した場合の代替手段：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ハイブリッドアプローチ                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   起動時                                                                     │
+│     │                                                                       │
+│     ▼                                                                       │
+│   GATT BASS 読み取り試行                                                    │
+│     │                                                                       │
+│     ├── 成功 ──▶ 自動で聴取中チャンネルを特定 🎉                            │
+│     │            「○○を再生中です」                                        │
+│     │                                                                       │
+│     └── 失敗 ──▶ 手動選択UIにフォールバック                                 │
+│                  ┌────────────────────────────────────┐                    │
+│                  │ どのチャンネルを聴いていますか？    │                    │
+│                  │ ○ Stadium JP (RSSI: -65)          │                    │
+│                  │ ○ Stadium EN (RSSI: -68)          │                    │
+│                  │ ○ 聴いていない                    │                    │
+│                  └────────────────────────────────────┘                    │
+│                                                                             │
+│   利点:                                                                     │
+│   ・対応デバイスではシームレスな自動検出                                     │
+│   ・非対応デバイスでも機能を提供                                             │
+│   ・段階的に対応デバイスリストを拡充可能                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.9 Android API Level要件
 
 | 機能 | 最小API Level | 対応Android | 備考 |
 |------|---------------|-------------|------|
@@ -97,7 +410,7 @@ Android 13以降、`BluetoothLeBroadcastAssistant`（システムレベルのBro
 | GATT Client | API 21+ | Android 5+ | 標準BLE API |
 | Auracast Broadcast検出 | API 33+ | Android 13+ | ハードウェア依存 |
 
-### 1.4 AndroidManifest.xml設定
+### 1.10 AndroidManifest.xml設定
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -172,6 +485,9 @@ Android 13以降、`BluetoothLeBroadcastAssistant`（システムレベルのBro
 ```
 
 ### 2.3 Add Source Operation データ構造
+
+> ⚠️ **注意**: このオペレーションは `@SystemApi` 制約により一般アプリからは実行不可能です。
+> 以下は仕様理解のための参考情報です。ユーザーはAndroidシステム設定画面から接続を行います。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -415,42 +731,522 @@ auracast_assistant/
 └── pubspec.yaml
 ```
 
-### 4.2 AWS CDK インフラストラクチャ構造
+### 4.2 Terraform インフラストラクチャ構造
 
 ```
-infrastructure/
-├── bin/
-│   └── infrastructure.ts
-├── lib/
-│   ├── stacks/
-│   │   ├── api-stack.ts
-│   │   ├── database-stack.ts
-│   │   ├── auth-stack.ts
-│   │   └── analytics-stack.ts
-│   └── constructs/
-│       ├── lambda-api.ts
-│       └── dynamodb-table.ts
-├── lambda/
-│   ├── api/
-│   │   ├── broadcasts/
-│   │   │   ├── get.py
-│   │   │   ├── list.py
-│   │   │   └── create.py
-│   │   └── shared/
-│   │       └── db.py
-│   └── analytics/
-│       └── transform.py
-├── graphql/
-│   ├── schema.graphql
-│   └── resolvers/
-└── package.json
+terraform/
+├── main.tf                        # メインエントリポイント
+├── variables.tf                   # 変数定義
+├── outputs.tf                     # 出力値定義
+├── backend.tf                     # リモートステート設定
+│
+├── environments/                  # 環境別設定
+│   ├── dev/
+│   │   └── terraform.tfvars      # 開発環境変数
+│   └── prod/
+│       └── terraform.tfvars      # 本番環境変数
+│
+└── modules/                       # 再利用可能なモジュール
+    ├── auth/                      # Cognito User Pool, Identity Pool
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    │
+    ├── database/                  # DynamoDB Single-Table Design
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    │
+    ├── api/                       # API Gateway, Lambda Functions
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    │
+    ├── analytics/                 # Personalize, OpenSearch, Kinesis, EventBridge
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    │
+    ├── realtime/                  # ElastiCache, WebSocket API, AppSync
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    │
+    └── location/                  # Amazon Location Service
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
+```
+
+### 4.3 Terraform モジュール構成
+
+| モジュール | 主なリソース | 説明 |
+|-----------|-------------|------|
+| auth | Cognito User Pool, Identity Pool, OAuth Providers | ユーザー認証・認可 |
+| database | DynamoDB Tables (5 GSI), Streams | データ永続化 |
+| api | API Gateway, Lambda, CloudWatch Logs | REST API エンドポイント |
+| analytics | Kinesis, OpenSearch, EventBridge, S3 | 分析・ML基盤 |
+| realtime | ElastiCache Redis, WebSocket API, AppSync | リアルタイム通信 |
+| location | Place Index, Map, Geofence, Tracker | 位置情報サービス |
+
+### 4.4 Terraform デプロイ手順
+
+```bash
+# 1. 初期化
+cd terraform
+terraform init
+
+# 2. 開発環境へのデプロイ
+terraform plan -var-file="environments/dev/terraform.tfvars"
+terraform apply -var-file="environments/dev/terraform.tfvars"
+
+# 3. 出力値の取得（Flutter設定用）
+terraform output flutter_amplify_config
+
+# 4. 本番環境へのデプロイ
+terraform plan -var-file="environments/prod/terraform.tfvars"
+terraform apply -var-file="environments/prod/terraform.tfvars"
+```
+
+### 4.5 環境変数（OAuth設定）
+
+```bash
+# Google OAuth
+export TF_VAR_google_client_id="your-google-client-id"
+export TF_VAR_google_client_secret="your-google-client-secret"
+
+# Apple Sign In
+export TF_VAR_apple_client_id="your-apple-service-id"
+export TF_VAR_apple_team_id="your-apple-team-id"
+export TF_VAR_apple_key_id="your-apple-key-id"
+export TF_VAR_apple_private_key="-----BEGIN PRIVATE KEY-----..."
+```
+
+### 4.6 Lambda関数ディレクトリ構造
+
+```
+lambda/
+├── users/
+│   ├── post_confirmation.py      # Cognito Post Confirmation Trigger
+│   ├── get_profile.py            # GET /users/me
+│   └── update_profile.py         # PUT /users/me
+│
+├── broadcasts/
+│   ├── list.py                   # GET /broadcasts
+│   ├── get.py                    # GET /broadcasts/{id}
+│   └── nearby.py                 # GET /broadcasts/nearby
+│
+├── reviews/
+│   ├── create_review.py          # POST /reviews
+│   ├── analyze_sentiment.py      # EventBridge trigger
+│   └── aggregate_ratings.py      # Rating aggregation
+│
+├── recommendations/
+│   ├── get_recommendations.py    # GET /recommendations
+│   └── record_event.py           # POST /events
+│
+├── listeners/
+│   ├── websocket_connect.py      # $connect
+│   ├── websocket_disconnect.py   # $disconnect
+│   ├── join_broadcast.py         # joinBroadcast action
+│   └── aggregate_stats.py        # CloudWatch Events trigger
+│
+├── geo/
+│   ├── geohash_utils.py          # Geohash utilities
+│   ├── register_location.py      # PUT /broadcasts/{id}/location
+│   └── search_nearby.py          # GET /broadcasts/nearby
+│
+└── shared/
+    ├── db.py                     # DynamoDB utilities
+    ├── auth.py                   # Authentication utilities
+    └── response.py               # API response helpers
 ```
 
 ---
 
-## 5. Kotlin実装コード
+## 5. プラットフォーム別実装コード
 
-### 5.1 Bluetooth UUIDs定義
+---
+
+### 5.A iOS (Swift/CoreBluetooth) 実装 - フル機能
+
+> iOSではCoreBluetooth経由でBASSサービスへのフルアクセスが可能です。
+> QK Assistantの実装から、Non-Scanning Assistant アーキテクチャが実現可能であることが確認されています。
+
+#### 5.A.1 Bluetooth UUIDs定義 (iOS)
+
+```swift
+// BluetoothConstants.swift
+import CoreBluetooth
+
+struct BluetoothConstants {
+    // BASS (Broadcast Audio Scan Service)
+    static let bassServiceUUID = CBUUID(string: "0000184F-0000-1000-8000-00805F9B34FB")
+
+    // BASS Characteristics
+    static let broadcastReceiveStateUUID = CBUUID(string: "00002BC8-0000-1000-8000-00805F9B34FB")
+    static let broadcastAudioScanControlPointUUID = CBUUID(string: "00002BC7-0000-1000-8000-00805F9B34FB")
+
+    // Broadcast Audio Announcement Service (スキャン用)
+    static let broadcastAudioAnnouncementUUID = CBUUID(string: "00001852-0000-1000-8000-00805F9B34FB")
+
+    // PA Sync State Values
+    enum PASyncState: UInt8 {
+        case notSynchronized = 0x00
+        case syncInfoRequest = 0x01
+        case synchronized = 0x02      // ★ 再生中
+        case failed = 0x03
+        case noPAST = 0x04
+    }
+
+    // BASS Control Point Opcodes
+    enum BASSOpcode: UInt8 {
+        case remoteScanStopped = 0x00
+        case remoteScanStarted = 0x01
+        case addSource = 0x02
+        case modifySource = 0x03
+        case setBroadcastCode = 0x04
+        case removeSource = 0x05
+    }
+}
+```
+
+#### 5.A.2 BASS Manager (iOS)
+
+```swift
+// BASSManager.swift
+import CoreBluetooth
+import Combine
+
+class BASSManager: NSObject, ObservableObject {
+    private var centralManager: CBCentralManager!
+    private var connectedPeripheral: CBPeripheral?
+    private var bassService: CBService?
+    private var receiveStateCharacteristic: CBCharacteristic?
+    private var controlPointCharacteristic: CBCharacteristic?
+
+    @Published var connectionState: ConnectionState = .disconnected
+    @Published var receiveStates: [BroadcastReceiveState] = []
+    @Published var errorMessage: String?
+
+    enum ConnectionState {
+        case disconnected, connecting, connected, discoveringServices, ready
+    }
+
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    // ペアリング済みデバイスに接続
+    func connectToDevice(_ peripheral: CBPeripheral) {
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        connectionState = .connecting
+        centralManager.connect(peripheral, options: nil)
+    }
+
+    // Broadcast Receive State を読み取り
+    func readBroadcastReceiveState() {
+        guard let characteristic = receiveStateCharacteristic else {
+            errorMessage = "Receive State characteristic not found"
+            return
+        }
+        connectedPeripheral?.readValue(for: characteristic)
+    }
+
+    // Add Source コマンドを送信 (Non-Scanning Assistant)
+    func addSource(broadcast: DiscoveredBroadcast) {
+        guard let controlPoint = controlPointCharacteristic else {
+            errorMessage = "Control Point characteristic not found"
+            return
+        }
+
+        let payload = buildAddSourcePayload(broadcast: broadcast)
+        connectedPeripheral?.writeValue(payload, for: controlPoint, type: .withResponse)
+    }
+
+    // Remove Source コマンドを送信
+    func removeSource(sourceId: UInt8) {
+        guard let controlPoint = controlPointCharacteristic else {
+            errorMessage = "Control Point characteristic not found"
+            return
+        }
+
+        var data = Data()
+        data.append(BluetoothConstants.BASSOpcode.removeSource.rawValue)
+        data.append(sourceId)
+
+        connectedPeripheral?.writeValue(data, for: controlPoint, type: .withResponse)
+    }
+
+    private func buildAddSourcePayload(broadcast: DiscoveredBroadcast) -> Data {
+        var data = Data()
+
+        // Opcode: Add Source (0x02)
+        data.append(BluetoothConstants.BASSOpcode.addSource.rawValue)
+
+        // Advertiser Address Type (1 octet)
+        data.append(broadcast.addressType)
+
+        // Advertiser Address (6 octets, little-endian)
+        data.append(contentsOf: broadcast.addressBytes)
+
+        // Advertising SID (1 octet)
+        data.append(broadcast.advertisingSID)
+
+        // Broadcast ID (3 octets, little-endian)
+        data.append(contentsOf: broadcast.broadcastIdBytes)
+
+        // PA_Sync (1 octet): 0x01 = Sync to PA
+        data.append(0x01)
+
+        // PA_Interval (2 octets): 0xFFFF = Unknown
+        data.append(0xFF)
+        data.append(0xFF)
+
+        // Num_Subgroups (1 octet): 1
+        data.append(0x01)
+
+        // BIS_Sync (4 octets): 0xFFFFFFFF = Sync all
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
+
+        // Metadata_Length (1 octet): 0
+        data.append(0x00)
+
+        return data
+    }
+}
+
+// MARK: - CBCentralManagerDelegate
+extension BASSManager: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state != .poweredOn {
+            connectionState = .disconnected
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        connectionState = .discoveringServices
+        peripheral.discoverServices([BluetoothConstants.bassServiceUUID])
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        connectionState = .disconnected
+        errorMessage = error?.localizedDescription
+    }
+}
+
+// MARK: - CBPeripheralDelegate
+extension BASSManager: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+
+        for service in services {
+            if service.uuid == BluetoothConstants.bassServiceUUID {
+                bassService = service
+                peripheral.discoverCharacteristics([
+                    BluetoothConstants.broadcastReceiveStateUUID,
+                    BluetoothConstants.broadcastAudioScanControlPointUUID
+                ], for: service)
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let characteristics = service.characteristics else { return }
+
+        for characteristic in characteristics {
+            switch characteristic.uuid {
+            case BluetoothConstants.broadcastReceiveStateUUID:
+                receiveStateCharacteristic = characteristic
+                // Notifyを有効化
+                peripheral.setNotifyValue(true, for: characteristic)
+                // 初回読み取り
+                peripheral.readValue(for: characteristic)
+
+            case BluetoothConstants.broadcastAudioScanControlPointUUID:
+                controlPointCharacteristic = characteristic
+
+            default:
+                break
+            }
+        }
+
+        if receiveStateCharacteristic != nil && controlPointCharacteristic != nil {
+            connectionState = .ready
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == BluetoothConstants.broadcastReceiveStateUUID,
+              let data = characteristic.value else { return }
+
+        if let receiveState = parseBroadcastReceiveState(data: data) {
+            // 既存のstateを更新または追加
+            if let index = receiveStates.firstIndex(where: { $0.sourceId == receiveState.sourceId }) {
+                receiveStates[index] = receiveState
+            } else {
+                receiveStates.append(receiveState)
+            }
+        }
+    }
+
+    private func parseBroadcastReceiveState(data: Data) -> BroadcastReceiveState? {
+        guard data.count >= 13 else { return nil }
+
+        let sourceId = data[0]
+        let addressType = data[1]
+        let sourceAddress = Data(data[2..<8])
+        let advSID = data[8]
+        let broadcastId = (UInt32(data[9]) | (UInt32(data[10]) << 8) | (UInt32(data[11]) << 16))
+        let paSyncState = BluetoothConstants.PASyncState(rawValue: data[12]) ?? .notSynchronized
+
+        return BroadcastReceiveState(
+            sourceId: sourceId,
+            addressType: addressType,
+            sourceAddress: sourceAddress,
+            advertisingSID: advSID,
+            broadcastId: broadcastId,
+            paSyncState: paSyncState,
+            rawData: data
+        )
+    }
+}
+```
+
+#### 5.A.3 データモデル (iOS)
+
+```swift
+// Models.swift
+import Foundation
+
+struct BroadcastReceiveState {
+    let sourceId: UInt8
+    let addressType: UInt8
+    let sourceAddress: Data
+    let advertisingSID: UInt8
+    let broadcastId: UInt32
+    let paSyncState: BluetoothConstants.PASyncState
+    let rawData: Data
+
+    var isSynchronized: Bool {
+        paSyncState == .synchronized
+    }
+}
+
+struct DiscoveredBroadcast: Identifiable {
+    let id = UUID()
+    let name: String
+    let broadcastId: UInt32
+    let addressType: UInt8
+    let addressBytes: [UInt8]
+    let advertisingSID: UInt8
+    let rssi: Int
+    let timestamp: Date
+
+    var broadcastIdBytes: [UInt8] {
+        [
+            UInt8(broadcastId & 0xFF),
+            UInt8((broadcastId >> 8) & 0xFF),
+            UInt8((broadcastId >> 16) & 0xFF)
+        ]
+    }
+}
+```
+
+#### 5.A.4 Auracast Assistant ViewModel (iOS)
+
+```swift
+// AuracastAssistantViewModel.swift
+import SwiftUI
+import Combine
+
+@MainActor
+class AuracastAssistantViewModel: ObservableObject {
+    private let bassManager = BASSManager()
+    private var cancellables = Set<AnyCancellable>()
+
+    @Published var pairedDevices: [PairedDevice] = []
+    @Published var selectedDevice: PairedDevice?
+    @Published var discoveredBroadcasts: [DiscoveredBroadcast] = []
+    @Published var currentlyPlaying: DiscoveredBroadcast?
+    @Published var isConnecting = false
+    @Published var errorMessage: String?
+
+    init() {
+        setupBindings()
+    }
+
+    private func setupBindings() {
+        bassManager.$receiveStates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] states in
+                self?.updateCurrentlyPlaying(from: states)
+            }
+            .store(in: &cancellables)
+
+        bassManager.$connectionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.isConnecting = (state == .connecting || state == .discoveringServices)
+            }
+            .store(in: &cancellables)
+
+        bassManager.$errorMessage
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$errorMessage)
+    }
+
+    private func updateCurrentlyPlaying(from receiveStates: [BroadcastReceiveState]) {
+        // 同期中（再生中）のソースを探す
+        guard let syncedState = receiveStates.first(where: { $0.isSynchronized }) else {
+            currentlyPlaying = nil
+            return
+        }
+
+        // スキャン結果とBroadcast IDをマッチング
+        currentlyPlaying = discoveredBroadcasts.first { broadcast in
+            broadcast.broadcastId == syncedState.broadcastId
+        }
+    }
+
+    // TWS/補聴器に接続
+    func connectToReceiver(_ device: PairedDevice) {
+        selectedDevice = device
+        bassManager.connectToDevice(device.peripheral)
+    }
+
+    // Auracast放送に接続（Add Source）
+    func connectToBroadcast(_ broadcast: DiscoveredBroadcast) {
+        bassManager.addSource(broadcast: broadcast)
+    }
+
+    // 現在の放送から切断（Remove Source）
+    func disconnectFromBroadcast() {
+        guard let state = bassManager.receiveStates.first(where: { $0.isSynchronized }) else {
+            return
+        }
+        bassManager.removeSource(sourceId: state.sourceId)
+    }
+}
+
+struct PairedDevice: Identifiable {
+    let id = UUID()
+    let name: String
+    let peripheral: CBPeripheral
+}
+```
+
+---
+
+### 5.B Android (Kotlin) 実装 - フル機能（GATT直接操作）
+
+> **更新**: `@SystemApi`制限は高レベルAPI（BluetoothLeBroadcastAssistant）に適用されますが、
+> **標準GATT API（BluetoothGatt）経由のBASS操作は制限されていません**。
+> iOSと同等のフル機能実装が可能です（要実機検証）。
+
+#### 5.B.1 Bluetooth UUIDs定義 (Android)
 
 ```kotlin
 // bluetooth/BluetoothUuids.kt
@@ -481,7 +1277,7 @@ object BluetoothUuids {
 }
 ```
 
-### 5.2 Broadcast Source スキャナー
+#### 5.B.2 Broadcast Source スキャナー (Android)
 
 ```kotlin
 // bluetooth/AuracastScanner.kt
@@ -593,7 +1389,13 @@ class AuracastScanner(
 class ScanException(message: String) : Exception(message)
 ```
 
-### 5.3 BASS GATT Manager
+#### 5.B.3 BASS GATT Manager (Android)
+
+> ✅ **アップデート**: 標準GATT API経由のBASS操作は`@SystemApi`制限の対象外
+>
+> - **読み取り操作**: `receiveStates` の購読 → 動作予測: 高（成功率: 70-90%）
+> - **書き込み操作**: `addSource()`, `removeSource()` → 動作予測: 高（要実機検証）
+> - **成功の鍵**: ペアリング済みデバイス + 暗号化接続が必要な場合あり
 
 ```kotlin
 // bluetooth/BassGattManager.kt
@@ -1001,7 +1803,158 @@ class BassGattManager(
 }
 ```
 
-### 5.4 Flutter Method Channel Plugin
+#### 5.B.4 再生中ソース検出ロジック（Broadcast ID照合）(Android)
+
+スキャン結果とBASS読み取り結果を照合して、現在再生中のチャンネル名を特定します。
+
+```kotlin
+// detector/PlaybackSourceDetector.kt
+package com.denon.auracast.detector
+
+import com.denon.auracast.bluetooth.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+/**
+ * 再生中のAuracastソースを検出するクラス
+ *
+ * 動作原理:
+ * 1. AuracastScannerでExtended ADVをスキャン → Map<BroadcastID, ChannelInfo>を構築
+ * 2. BassGattManagerでTWSのBroadcast Receive Stateを読み取り → 現在のBroadcastIDを取得
+ * 3. PA_Sync_State = SYNCED (0x02) のエントリを照合 → チャンネル名を特定
+ */
+class PlaybackSourceDetector(
+    private val scanner: AuracastScanner,
+    private val bassManager: BassGattManager
+) {
+    // スキャンで発見した放送のマップ: BroadcastID → チャンネル情報
+    private val _discoveredBroadcasts = MutableStateFlow<Map<Int, DiscoveredBroadcast>>(emptyMap())
+    val discoveredBroadcasts: StateFlow<Map<Int, DiscoveredBroadcast>> = _discoveredBroadcasts.asStateFlow()
+
+    // 検出された再生中チャンネル
+    private val _currentlyPlaying = MutableStateFlow<PlayingChannel?>(null)
+    val currentlyPlaying: StateFlow<PlayingChannel?> = _currentlyPlaying.asStateFlow()
+
+    // 検出状態
+    private val _detectionState = MutableStateFlow<DetectionState>(DetectionState.Idle)
+    val detectionState: StateFlow<DetectionState> = _detectionState.asStateFlow()
+
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var scanJob: Job? = null
+    private var matchJob: Job? = null
+
+    /**
+     * 検出を開始
+     */
+    fun startDetection() {
+        _detectionState.value = DetectionState.Scanning
+
+        // Step 1: スキャンを開始してBroadcast Mapを構築
+        scanJob = scope.launch {
+            scanner.startScan().collect { broadcast ->
+                val currentMap = _discoveredBroadcasts.value.toMutableMap()
+                currentMap[broadcast.broadcastId] = broadcast
+                _discoveredBroadcasts.value = currentMap
+            }
+        }
+
+        // Step 2: BASSの状態変更を監視して照合
+        matchJob = scope.launch {
+            bassManager.receiveStates.collect { states ->
+                matchPlayingSource(states)
+            }
+        }
+    }
+
+    /**
+     * BASS Receive StateとスキャンMapを照合
+     */
+    private fun matchPlayingSource(receiveStates: List<BroadcastReceiveState>) {
+        // PA_Sync_State = SYNCED (0x02) のソースを探す
+        val syncedState = receiveStates.find { it.paSyncState == PaSyncState.SYNCED }
+
+        if (syncedState == null) {
+            _currentlyPlaying.value = null
+            _detectionState.value = DetectionState.NoPlayback
+            return
+        }
+
+        // スキャンMapから対応する放送を検索
+        val matchedBroadcast = _discoveredBroadcasts.value[syncedState.broadcastId]
+
+        if (matchedBroadcast != null) {
+            // 照合成功！
+            _currentlyPlaying.value = PlayingChannel(
+                broadcastId = syncedState.broadcastId,
+                channelName = matchedBroadcast.name ?: "Unknown Channel",
+                rssi = matchedBroadcast.rssi,
+                sourceAddress = syncedState.sourceAddress,
+                isEncrypted = matchedBroadcast.isEncrypted
+            )
+            _detectionState.value = DetectionState.Detected
+        } else {
+            // BroadcastIDは取得できたが、スキャンMapに該当なし
+            // → まだスキャンで見つかっていない or 範囲外
+            _currentlyPlaying.value = PlayingChannel(
+                broadcastId = syncedState.broadcastId,
+                channelName = "ID: ${syncedState.broadcastId.toHexString()}",
+                rssi = null,
+                sourceAddress = syncedState.sourceAddress,
+                isEncrypted = false
+            )
+            _detectionState.value = DetectionState.PartialMatch
+        }
+    }
+
+    /**
+     * 手動でBASSを読み取り直す
+     */
+    suspend fun refreshBassState() {
+        _detectionState.value = DetectionState.ReadingBass
+        // BASS Characteristicを再読み取り（Notifyが来ていない場合用）
+        // 実装はBassGattManagerに依存
+    }
+
+    /**
+     * 検出を停止
+     */
+    fun stopDetection() {
+        scanJob?.cancel()
+        matchJob?.cancel()
+        scanner.stopScan()
+        _detectionState.value = DetectionState.Idle
+    }
+
+    private fun Int.toHexString(): String =
+        String.format("%06X", this and 0xFFFFFF)
+}
+
+/**
+ * 再生中チャンネル情報
+ */
+data class PlayingChannel(
+    val broadcastId: Int,
+    val channelName: String,
+    val rssi: Int?,
+    val sourceAddress: String,
+    val isEncrypted: Boolean
+)
+
+/**
+ * 検出状態
+ */
+sealed class DetectionState {
+    object Idle : DetectionState()
+    object Scanning : DetectionState()
+    object ReadingBass : DetectionState()
+    object NoPlayback : DetectionState()      // 再生中のソースなし
+    object PartialMatch : DetectionState()    // BroadcastIDは取得、名前は未特定
+    object Detected : DetectionState()        // 完全に特定成功
+    data class Error(val message: String) : DetectionState()
+}
+```
+
+#### 5.B.5 Flutter Method Channel Plugin (Android)
 
 ```kotlin
 // plugins/AuracastPlugin.kt
@@ -1600,56 +2553,1390 @@ Point-in-Time Recovery: Enabled
 │ USER#12345     │ DEVICE#dev_001          │ deviceType, name, lastSeen       │
 │ USER#12345     │ FAVORITE#bc_001         │ broadcastId, addedAt             │
 │ USER#12345     │ HISTORY#2024-12-18      │ broadcastId, duration, timestamp │
+│ USER#12345     │ PREFERENCE              │ categories, languages, settings  │
 ├────────────────┼─────────────────────────┼──────────────────────────────────┤
 │ BROADCAST#bc_001│ META                   │ name, language, quality, location│
 │ BROADCAST#bc_001│ SCHEDULE#2024-12-18   │ startTime, endTime, description  │
+│ BROADCAST#bc_001│ STATS                  │ totalListeners, avgRating, etc   │
+├────────────────┼─────────────────────────┼──────────────────────────────────┤
+│ REVIEW#rev_001 │ META                    │ userId, broadcastId, rating, text│
+│ REVIEW#rev_001 │ SENTIMENT               │ score, magnitude, categories     │
 ├────────────────┼─────────────────────────┼──────────────────────────────────┤
 │ VENUE#venue_001│ META                    │ name, address, coordinates       │
 │ VENUE#venue_001│ BROADCAST#bc_001       │ broadcastId, position, active    │
+├────────────────┼─────────────────────────┼──────────────────────────────────┤
+│ GEO#35.6812#139│ BROADCAST#bc_001       │ broadcastId, geohash, distance   │
 └────────────────┴─────────────────────────┴──────────────────────────────────┘
+```
+
+### 8.3 追加GSI設計
+
+```
+GSI3: 口コミ検索用
+  - GSI3PK: BROADCAST#{broadcastId}
+  - GSI3SK: REVIEW#{timestamp}
+  - 用途: 特定チャンネルのレビュー一覧取得
+
+GSI4: 位置情報検索用（Geohash）
+  - GSI4PK: GEOHASH#{geohash_prefix}
+  - GSI4SK: {broadcastId}
+  - 用途: 近隣チャンネル検索
+
+GSI5: 人気ランキング用
+  - GSI5PK: CATEGORY#{category}
+  - GSI5SK: RANK#{score}#{broadcastId}
+  - 用途: カテゴリ別人気ランキング
 ```
 
 ---
 
-## 9. 実装チェックリスト
+## 9. サーバーサイド機能詳細設計
 
-### Phase 1: 基盤構築（Week 1-2）
+### 9.1 ユーザー登録・認証システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         ユーザー登録・認証アーキテクチャ                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│  │   Flutter   │───►│  Cognito    │───►│  Lambda     │───►│  DynamoDB   │     │
+│  │    App      │    │ User Pools  │    │ Post-Confirm│    │  User Table │     │
+│  └─────────────┘    └─────────────┘    │  Trigger    │    └─────────────┘     │
+│         │                 │            └─────────────┘           │             │
+│         │                 │                   │                  │             │
+│         │           ┌─────────────┐           │            ┌─────────────┐     │
+│         │           │  Identity   │           └───────────►│ EventBridge │     │
+│         └──────────►│    Pool     │                        │ User Events │     │
+│                     └─────────────┘                        └─────────────┘     │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.1.1 Cognito User Pool 設定
+
+```typescript
+// infrastructure/lib/constructs/auth-construct.ts
+const userPool = new cognito.UserPool(this, 'AuracastUserPool', {
+  userPoolName: 'auracast-users',
+  selfSignUpEnabled: true,
+  signInAliases: {
+    email: true,
+    phone: true,
+  },
+  autoVerify: {
+    email: true,
+  },
+  standardAttributes: {
+    email: { required: true, mutable: true },
+    nickname: { required: false, mutable: true },
+    locale: { required: false, mutable: true },
+  },
+  customAttributes: {
+    'preferred_categories': new cognito.StringAttribute({ mutable: true }),
+    'preferred_languages': new cognito.StringAttribute({ mutable: true }),
+  },
+  passwordPolicy: {
+    minLength: 8,
+    requireLowercase: true,
+    requireUppercase: true,
+    requireDigits: true,
+    requireSymbols: false,
+  },
+  accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+  mfa: cognito.Mfa.OPTIONAL,
+  mfaSecondFactor: {
+    sms: true,
+    otp: true,
+  },
+});
+
+// ソーシャルログイン設定
+const googleProvider = new cognito.UserPoolIdentityProviderGoogle(this, 'Google', {
+  clientId: process.env.GOOGLE_CLIENT_ID!,
+  clientSecret: SecretValue.secretsManager('google-oauth-secret'),
+  userPool,
+  scopes: ['email', 'profile'],
+  attributeMapping: {
+    email: cognito.ProviderAttribute.GOOGLE_EMAIL,
+    nickname: cognito.ProviderAttribute.GOOGLE_NAME,
+  },
+});
+
+const appleProvider = new cognito.UserPoolIdentityProviderApple(this, 'Apple', {
+  clientId: process.env.APPLE_CLIENT_ID!,
+  teamId: process.env.APPLE_TEAM_ID!,
+  keyId: process.env.APPLE_KEY_ID!,
+  privateKey: SecretValue.secretsManager('apple-private-key'),
+  userPool,
+  scopes: ['email', 'name'],
+});
+```
+
+#### 9.1.2 ユーザープロファイル Lambda
+
+```python
+# lambda/users/post_confirmation.py
+import boto3
+import json
+from datetime import datetime
+import uuid
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+eventbridge = boto3.client('events')
+
+def handler(event, context):
+    """Cognito Post Confirmation Trigger - ユーザープロファイル作成"""
+
+    user_attributes = event['request']['userAttributes']
+    user_id = event['userName']
+
+    # ユーザープロファイル作成
+    profile_item = {
+        'PK': f'USER#{user_id}',
+        'SK': 'PROFILE',
+        'userId': user_id,
+        'email': user_attributes.get('email'),
+        'nickname': user_attributes.get('nickname', ''),
+        'locale': user_attributes.get('locale', 'ja-JP'),
+        'createdAt': datetime.utcnow().isoformat(),
+        'updatedAt': datetime.utcnow().isoformat(),
+        'status': 'ACTIVE',
+        'GSI1PK': 'USERS',
+        'GSI1SK': f'CREATED#{datetime.utcnow().isoformat()}',
+    }
+
+    # ユーザー設定初期化
+    preference_item = {
+        'PK': f'USER#{user_id}',
+        'SK': 'PREFERENCE',
+        'preferredCategories': [],
+        'preferredLanguages': ['ja'],
+        'notificationEnabled': True,
+        'autoPlayEnabled': False,
+        'dataCollectionConsent': True,
+    }
+
+    # バッチ書き込み
+    with table.batch_writer() as batch:
+        batch.put_item(Item=profile_item)
+        batch.put_item(Item=preference_item)
+
+    # EventBridge にユーザー登録イベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.users',
+            'DetailType': 'UserRegistered',
+            'Detail': json.dumps({
+                'userId': user_id,
+                'email': user_attributes.get('email'),
+                'timestamp': datetime.utcnow().isoformat(),
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return event
+```
+
+#### 9.1.3 ユーザー API エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/users/me` | GET | 自分のプロファイル取得 |
+| `/users/me` | PUT | プロファイル更新 |
+| `/users/me/preferences` | GET/PUT | 設定取得・更新 |
+| `/users/me/devices` | GET/POST/DELETE | デバイス管理 |
+| `/users/me/history` | GET | 視聴履歴取得 |
+| `/users/me/favorites` | GET/POST/DELETE | お気に入り管理 |
+
+---
+
+### 9.2 チャンネル分析・レコメンドシステム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                         チャンネルレコメンドアーキテクチャ                               │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  ユーザー行動                                                                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│  Kinesis    │───►│  Lambda     │───►│    S3       │             │
+│  │ イベント送信 │    │Data Streams │    │ ETL処理     │    │ Data Lake   │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│         │                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         │                             │ Personalize │◄───│  Glue ETL   │             │
+│         │                             │   Dataset   │    │  データ変換  │             │
+│         │                             └─────────────┘    └─────────────┘             │
+│         │                                     │                                        │
+│         │                                     ▼                                        │
+│  レコメンド取得                        ┌─────────────┐                                 │
+│  ┌─────────────┐    ┌─────────────┐    │ Personalize │                                 │
+│  │   Flutter   │◄───│ API Gateway │◄───│  Campaign   │                                 │
+│  │ レコメンド  │    │  /recommend │    │ リアルタイム │                                 │
+│  │  表示       │    │             │    │   推薦      │                                 │
+│  └─────────────┘    └─────────────┘    └─────────────┘                                 │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.2.1 ユーザー行動イベントスキーマ
+
+```json
+{
+  "eventType": "CHANNEL_INTERACTION",
+  "userId": "user_12345",
+  "sessionId": "session_abc",
+  "timestamp": "2024-12-18T10:30:00Z",
+  "eventName": "LISTEN_START | LISTEN_END | FAVORITE_ADD | SEARCH | VIEW_DETAIL",
+  "properties": {
+    "broadcastId": "bc_001",
+    "broadcastName": "Cafe Jazz BGM",
+    "category": "MUSIC",
+    "duration": 1800,
+    "location": {
+      "latitude": 35.6812,
+      "longitude": 139.7671,
+      "geohash": "xn77h"
+    },
+    "deviceType": "TWS",
+    "signalStrength": -45
+  }
+}
+```
+
+#### 9.2.2 Amazon Personalize 設定
+
+```typescript
+// infrastructure/lib/constructs/personalize-construct.ts
+
+// データセットグループ
+const datasetGroup = new personalize.CfnDatasetGroup(this, 'AuracastDatasetGroup', {
+  name: 'auracast-recommendations',
+});
+
+// インタラクションスキーマ
+const interactionsSchema = {
+  type: 'record',
+  name: 'Interactions',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'USER_ID', type: 'string' },
+    { name: 'ITEM_ID', type: 'string' },
+    { name: 'TIMESTAMP', type: 'long' },
+    { name: 'EVENT_TYPE', type: 'string' },
+    { name: 'EVENT_VALUE', type: ['null', 'float'], default: null },
+  ],
+  version: '1.0',
+};
+
+// アイテムスキーマ（チャンネルメタデータ）
+const itemsSchema = {
+  type: 'record',
+  name: 'Items',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'ITEM_ID', type: 'string' },
+    { name: 'CATEGORY', type: 'string', categorical: true },
+    { name: 'LANGUAGE', type: 'string', categorical: true },
+    { name: 'VENUE_TYPE', type: 'string', categorical: true },
+    { name: 'AUDIO_QUALITY', type: 'string', categorical: true },
+    { name: 'CREATION_TIMESTAMP', type: 'long' },
+  ],
+  version: '1.0',
+};
+
+// ユーザースキーマ
+const usersSchema = {
+  type: 'record',
+  name: 'Users',
+  namespace: 'com.auracast',
+  fields: [
+    { name: 'USER_ID', type: 'string' },
+    { name: 'PREFERRED_CATEGORIES', type: 'string', categorical: true },
+    { name: 'PREFERRED_LANGUAGES', type: 'string', categorical: true },
+    { name: 'LOCALE', type: 'string', categorical: true },
+  ],
+  version: '1.0',
+};
+
+// レシピ選択
+// - ユーザーパーソナライゼーション: aws-user-personalization-v2
+// - 類似アイテム: aws-similar-items
+// - リアルタイムレコメンド: aws-personalized-ranking
+```
+
+#### 9.2.3 レコメンド API Lambda
+
+```python
+# lambda/recommendations/get_recommendations.py
+import boto3
+import json
+
+personalize_runtime = boto3.client('personalize-runtime')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+CAMPAIGN_ARN = 'arn:aws:personalize:ap-northeast-1:xxx:campaign/auracast-user-personalization'
+
+def handler(event, context):
+    """ユーザーにパーソナライズされたチャンネル推薦を返す"""
+
+    user_id = event['requestContext']['authorizer']['claims']['sub']
+    query_params = event.get('queryStringParameters', {}) or {}
+
+    num_results = int(query_params.get('limit', 10))
+    category_filter = query_params.get('category')
+
+    # フィルター式構築
+    filter_arn = None
+    if category_filter:
+        filter_arn = f'arn:aws:personalize:ap-northeast-1:xxx:filter/category-{category_filter}'
+
+    # Personalize からレコメンド取得
+    response = personalize_runtime.get_recommendations(
+        campaignArn=CAMPAIGN_ARN,
+        userId=user_id,
+        numResults=num_results,
+        filterArn=filter_arn,
+        context={
+            'DEVICE_TYPE': query_params.get('deviceType', 'UNKNOWN'),
+        }
+    )
+
+    # チャンネル詳細情報を DynamoDB から取得
+    item_ids = [item['itemId'] for item in response['itemList']]
+
+    recommendations = []
+    for item_id in item_ids:
+        channel_response = table.get_item(
+            Key={'PK': f'BROADCAST#{item_id}', 'SK': 'META'}
+        )
+        if 'Item' in channel_response:
+            channel = channel_response['Item']
+            recommendations.append({
+                'broadcastId': item_id,
+                'name': channel.get('name'),
+                'category': channel.get('category'),
+                'language': channel.get('language'),
+                'venue': channel.get('venue'),
+                'currentListeners': channel.get('currentListeners', 0),
+                'avgRating': channel.get('avgRating', 0),
+                'score': next(
+                    (item['score'] for item in response['itemList'] if item['itemId'] == item_id),
+                    0
+                )
+            })
+
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps({
+            'recommendations': recommendations,
+            'recommendationId': response.get('recommendationId'),
+        })
+    }
+```
+
+#### 9.2.4 レコメンドAPI エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/recommendations` | GET | パーソナライズ推薦取得 |
+| `/recommendations/similar/{broadcastId}` | GET | 類似チャンネル取得 |
+| `/recommendations/trending` | GET | トレンドチャンネル |
+| `/recommendations/nearby` | GET | 近隣人気チャンネル |
+| `/events` | POST | ユーザー行動イベント送信 |
+
+---
+
+### 9.3 口コミ評価・分類システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                            口コミ・レビューアーキテクチャ                                │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  レビュー投稿フロー                                                                      │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │───►│  DynamoDB   │             │
+│  │ レビュー投稿│    │ POST /review│    │ 投稿処理    │    │ レビュー保存 │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│                                               │                  │                     │
+│                                               ▼                  │                     │
+│                                        ┌─────────────┐           │                     │
+│                                        │ EventBridge │           │                     │
+│                                        │ ReviewPosted│           │                     │
+│                                        └─────────────┘           │                     │
+│                                               │                  │                     │
+│                              ┌────────────────┼──────────────────┤                     │
+│                              ▼                ▼                  ▼                     │
+│                       ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │
+│                       │ Comprehend  │  │ OpenSearch  │  │   Lambda    │               │
+│                       │ 感情分析    │  │ インデックス │  │ 評価集計    │               │
+│                       └─────────────┘  └─────────────┘  └─────────────┘               │
+│                              │                │                  │                     │
+│                              ▼                ▼                  ▼                     │
+│                       ┌─────────────┐  ┌─────────────┐  ┌─────────────┐               │
+│                       │  DynamoDB   │  │ OpenSearch  │  │  DynamoDB   │               │
+│                       │ 感情スコア  │  │ 検索可能    │  │ BROADCAST   │               │
+│                       │  保存       │  │             │  │ 統計更新    │               │
+│                       └─────────────┘  └─────────────┘  └─────────────┘               │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.3.1 レビューデータモデル
+
+```typescript
+interface Review {
+  reviewId: string;           // UUID
+  userId: string;             // 投稿者ID
+  broadcastId: string;        // 対象チャンネル
+  rating: number;             // 1-5星評価
+  title: string;              // レビュータイトル（任意）
+  content: string;            // レビュー本文
+  tags: string[];             // ユーザータグ（例: ["音質良い", "BGMに最適"]）
+
+  // 自動分析結果
+  sentiment: {
+    score: number;            // -1.0 ~ 1.0
+    magnitude: number;        // 0 ~ ∞
+    label: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'MIXED';
+  };
+  categories: string[];       // 自動分類カテゴリ
+  keyPhrases: string[];       // 抽出キーフレーズ
+
+  // メタデータ
+  createdAt: string;
+  updatedAt: string;
+  helpfulCount: number;       // 「参考になった」数
+  reportCount: number;        // 報告数
+  status: 'ACTIVE' | 'HIDDEN' | 'DELETED';
+}
+```
+
+#### 9.3.2 レビュー投稿 Lambda
+
+```python
+# lambda/reviews/create_review.py
+import boto3
+import json
+from datetime import datetime
+import uuid
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+eventbridge = boto3.client('events')
+
+def handler(event, context):
+    """レビュー投稿処理"""
+
+    user_id = event['requestContext']['authorizer']['claims']['sub']
+    body = json.loads(event['body'])
+
+    review_id = str(uuid.uuid4())
+    timestamp = datetime.utcnow().isoformat()
+
+    # 重複投稿チェック（同一ユーザー・同一チャンネル）
+    existing = table.query(
+        IndexName='GSI3',
+        KeyConditionExpression='GSI3PK = :pk',
+        FilterExpression='userId = :uid',
+        ExpressionAttributeValues={
+            ':pk': f'BROADCAST#{body["broadcastId"]}',
+            ':uid': user_id,
+        },
+        Limit=1
+    )
+
+    if existing['Items']:
+        return {
+            'statusCode': 409,
+            'body': json.dumps({'error': 'Already reviewed this channel'})
+        }
+
+    # レビュー作成
+    review_item = {
+        'PK': f'REVIEW#{review_id}',
+        'SK': 'META',
+        'reviewId': review_id,
+        'userId': user_id,
+        'broadcastId': body['broadcastId'],
+        'rating': body['rating'],
+        'title': body.get('title', ''),
+        'content': body['content'],
+        'tags': body.get('tags', []),
+        'createdAt': timestamp,
+        'updatedAt': timestamp,
+        'helpfulCount': 0,
+        'reportCount': 0,
+        'status': 'ACTIVE',
+        # GSI用
+        'GSI3PK': f'BROADCAST#{body["broadcastId"]}',
+        'GSI3SK': f'REVIEW#{timestamp}',
+    }
+
+    table.put_item(Item=review_item)
+
+    # EventBridge にイベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.reviews',
+            'DetailType': 'ReviewPosted',
+            'Detail': json.dumps({
+                'reviewId': review_id,
+                'userId': user_id,
+                'broadcastId': body['broadcastId'],
+                'rating': body['rating'],
+                'content': body['content'],
+                'timestamp': timestamp,
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return {
+        'statusCode': 201,
+        'body': json.dumps({'reviewId': review_id})
+    }
+```
+
+#### 9.3.3 感情分析 Lambda（EventBridge トリガー）
+
+```python
+# lambda/reviews/analyze_sentiment.py
+import boto3
+import json
+
+comprehend = boto3.client('comprehend')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def handler(event, context):
+    """Amazon Comprehend による感情分析"""
+
+    detail = event['detail']
+    review_id = detail['reviewId']
+    content = detail['content']
+
+    # 感情分析
+    sentiment_response = comprehend.detect_sentiment(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # キーフレーズ抽出
+    phrases_response = comprehend.detect_key_phrases(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # エンティティ抽出（場所、組織などの自動検出）
+    entities_response = comprehend.detect_entities(
+        Text=content,
+        LanguageCode='ja'
+    )
+
+    # 感情スコア計算
+    sentiment_scores = sentiment_response['SentimentScore']
+    score = sentiment_scores['Positive'] - sentiment_scores['Negative']
+    magnitude = max(
+        sentiment_scores['Positive'],
+        sentiment_scores['Negative'],
+        sentiment_scores['Mixed']
+    )
+
+    # DynamoDB 更新
+    table.update_item(
+        Key={'PK': f'REVIEW#{review_id}', 'SK': 'META'},
+        UpdateExpression='''
+            SET sentiment = :sentiment,
+                keyPhrases = :phrases,
+                entities = :entities
+        ''',
+        ExpressionAttributeValues={
+            ':sentiment': {
+                'score': str(score),
+                'magnitude': str(magnitude),
+                'label': sentiment_response['Sentiment'],
+            },
+            ':phrases': [p['Text'] for p in phrases_response['KeyPhrases'][:10]],
+            ':entities': [
+                {'text': e['Text'], 'type': e['Type']}
+                for e in entities_response['Entities'][:10]
+            ],
+        }
+    )
+
+    # 感情分析結果を別レコードに保存
+    table.put_item(
+        Item={
+            'PK': f'REVIEW#{review_id}',
+            'SK': 'SENTIMENT',
+            'sentimentLabel': sentiment_response['Sentiment'],
+            'sentimentScore': json.loads(json.dumps(sentiment_scores), parse_float=str),
+            'keyPhrases': [p['Text'] for p in phrases_response['KeyPhrases']],
+            'analyzedAt': detail['timestamp'],
+        }
+    )
+
+    return {'statusCode': 200}
+```
+
+#### 9.3.4 OpenSearch インデックス設計
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "reviewId": { "type": "keyword" },
+      "userId": { "type": "keyword" },
+      "broadcastId": { "type": "keyword" },
+      "rating": { "type": "integer" },
+      "title": {
+        "type": "text",
+        "analyzer": "kuromoji"
+      },
+      "content": {
+        "type": "text",
+        "analyzer": "kuromoji"
+      },
+      "tags": { "type": "keyword" },
+      "sentiment": {
+        "properties": {
+          "score": { "type": "float" },
+          "label": { "type": "keyword" }
+        }
+      },
+      "keyPhrases": { "type": "keyword" },
+      "createdAt": { "type": "date" },
+      "location": { "type": "geo_point" }
+    }
+  },
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "kuromoji": {
+          "type": "custom",
+          "tokenizer": "kuromoji_tokenizer"
+        }
+      }
+    }
+  }
+}
+```
+
+#### 9.3.5 レビューAPI エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/reviews` | POST | レビュー投稿 |
+| `/reviews/{reviewId}` | GET/PUT/DELETE | レビュー操作 |
+| `/reviews/{reviewId}/helpful` | POST | 「参考になった」|
+| `/broadcasts/{id}/reviews` | GET | チャンネルのレビュー一覧 |
+| `/reviews/search` | GET | レビュー検索（全文検索）|
+| `/broadcasts/{id}/rating-summary` | GET | 評価サマリー取得 |
+
+---
+
+### 9.4 再生人数（リスナー数）トラッキングシステム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           リアルタイムリスナー数アーキテクチャ                           │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  リスナー参加/離脱                                                                       │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│  WebSocket  │───►│   Lambda    │───►│ ElastiCache │             │
+│  │ 接続/切断   │    │  API GW     │    │ Connection  │    │   (Redis)   │             │
+│  │  通知       │    │             │    │  Handler    │    │  カウンター  │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│         ▲                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         │                             │ EventBridge │    │   Lambda    │             │
+│         │                             │ Listener    │    │ 定期集計    │             │
+│         │                             │  Changed    │    │ (1分毎)     │             │
+│         │                             └─────────────┘    └─────────────┘             │
+│         │                                     │                  │                     │
+│         │                                     ▼                  ▼                     │
+│         │                             ┌─────────────┐    ┌─────────────┐             │
+│         └─────────────────────────────│  AppSync    │    │  DynamoDB   │             │
+│              リアルタイム配信          │ Subscription│    │ 統計保存    │             │
+│                                        └─────────────┘    └─────────────┘             │
+│                                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
+│  │                           Redis データ構造                                       │   │
+│  │                                                                                   │   │
+│  │  Key: listeners:{broadcastId}        │  SET  │  接続中ユーザーIDセット          │   │
+│  │  Key: listener_count:{broadcastId}   │  INT  │  リスナー総数（原子的カウンター）│   │
+│  │  Key: hourly_peak:{broadcastId}:{h}  │  INT  │  時間別ピーク人数                │   │
+│  │  Key: session:{connectionId}         │ HASH  │  接続セッション情報              │   │
+│  │                                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.4.1 WebSocket 接続ハンドラー
+
+```python
+# lambda/listeners/websocket_handler.py
+import boto3
+import json
+import os
+from datetime import datetime
+
+redis_client = None  # Lambda Layer経由で初期化
+dynamodb = boto3.resource('dynamodb')
+connections_table = dynamodb.Table('auracast-websocket-connections')
+eventbridge = boto3.client('events')
+
+def get_redis():
+    global redis_client
+    if redis_client is None:
+        import redis
+        redis_client = redis.Redis(
+            host=os.environ['REDIS_HOST'],
+            port=6379,
+            decode_responses=True
+        )
+    return redis_client
+
+def connect_handler(event, context):
+    """WebSocket $connect"""
+    connection_id = event['requestContext']['connectionId']
+
+    # 接続情報保存
+    connections_table.put_item(
+        Item={
+            'connectionId': connection_id,
+            'connectedAt': datetime.utcnow().isoformat(),
+            'userId': event['requestContext'].get('authorizer', {}).get('userId'),
+        }
+    )
+
+    return {'statusCode': 200}
+
+def disconnect_handler(event, context):
+    """WebSocket $disconnect"""
+    connection_id = event['requestContext']['connectionId']
+    r = get_redis()
+
+    # セッション情報取得
+    session = r.hgetall(f'session:{connection_id}')
+
+    if session and 'broadcastId' in session:
+        broadcast_id = session['broadcastId']
+        user_id = session.get('userId')
+
+        # リスナーセットから削除
+        r.srem(f'listeners:{broadcast_id}', user_id or connection_id)
+
+        # カウンター減少
+        new_count = r.decr(f'listener_count:{broadcast_id}')
+
+        # イベント発行
+        eventbridge.put_events(
+            Entries=[{
+                'Source': 'auracast.listeners',
+                'DetailType': 'ListenerLeft',
+                'Detail': json.dumps({
+                    'broadcastId': broadcast_id,
+                    'currentCount': max(0, new_count),
+                    'timestamp': datetime.utcnow().isoformat(),
+                }),
+                'EventBusName': 'auracast-events',
+            }]
+        )
+
+    # セッション削除
+    r.delete(f'session:{connection_id}')
+    connections_table.delete_item(Key={'connectionId': connection_id})
+
+    return {'statusCode': 200}
+
+def join_broadcast_handler(event, context):
+    """チャンネル参加メッセージ処理"""
+    connection_id = event['requestContext']['connectionId']
+    body = json.loads(event['body'])
+    broadcast_id = body['broadcastId']
+    user_id = body.get('userId')
+
+    r = get_redis()
+
+    # セッション保存
+    r.hset(f'session:{connection_id}', mapping={
+        'broadcastId': broadcast_id,
+        'userId': user_id or connection_id,
+        'joinedAt': datetime.utcnow().isoformat(),
+    })
+    r.expire(f'session:{connection_id}', 3600 * 24)  # 24時間TTL
+
+    # リスナーセットに追加
+    r.sadd(f'listeners:{broadcast_id}', user_id or connection_id)
+
+    # カウンター増加
+    new_count = r.incr(f'listener_count:{broadcast_id}')
+
+    # ピーク更新
+    hour_key = datetime.utcnow().strftime('%Y%m%d%H')
+    r.set(
+        f'hourly_peak:{broadcast_id}:{hour_key}',
+        max(int(r.get(f'hourly_peak:{broadcast_id}:{hour_key}') or 0), new_count)
+    )
+
+    # イベント発行
+    eventbridge.put_events(
+        Entries=[{
+            'Source': 'auracast.listeners',
+            'DetailType': 'ListenerJoined',
+            'Detail': json.dumps({
+                'broadcastId': broadcast_id,
+                'currentCount': new_count,
+                'timestamp': datetime.utcnow().isoformat(),
+            }),
+            'EventBusName': 'auracast-events',
+        }]
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'currentListeners': new_count})
+    }
+```
+
+#### 9.4.2 リアルタイム配信（AppSync Subscription）
+
+```graphql
+# graphql/schema.graphql
+
+type Subscription {
+  onListenerCountChanged(broadcastId: ID!): ListenerUpdate
+    @aws_subscribe(mutations: ["updateListenerCount"])
+}
+
+type ListenerUpdate {
+  broadcastId: ID!
+  currentCount: Int!
+  change: Int!
+  timestamp: AWSDateTime!
+}
+
+type Mutation {
+  updateListenerCount(input: ListenerCountInput!): ListenerUpdate
+}
+
+input ListenerCountInput {
+  broadcastId: ID!
+  currentCount: Int!
+  change: Int!
+}
+
+type Query {
+  getListenerCount(broadcastId: ID!): ListenerStats
+  getListenerHistory(broadcastId: ID!, period: StatsPeriod!): [ListenerDataPoint!]!
+}
+
+type ListenerStats {
+  broadcastId: ID!
+  currentCount: Int!
+  peakToday: Int!
+  peakAllTime: Int!
+  averageDaily: Float!
+}
+
+enum StatsPeriod {
+  HOUR
+  DAY
+  WEEK
+  MONTH
+}
+
+type ListenerDataPoint {
+  timestamp: AWSDateTime!
+  count: Int!
+}
+```
+
+#### 9.4.3 定期集計 Lambda（CloudWatch Events 1分毎）
+
+```python
+# lambda/listeners/aggregate_stats.py
+import boto3
+import json
+from datetime import datetime, timedelta
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def handler(event, context):
+    """1分毎にRedisからDynamoDBに統計を永続化"""
+
+    r = get_redis()
+
+    # アクティブなチャンネルのリスナー数を取得
+    broadcast_keys = r.keys('listener_count:*')
+
+    timestamp = datetime.utcnow()
+    minute_key = timestamp.strftime('%Y%m%d%H%M')
+
+    for key in broadcast_keys:
+        broadcast_id = key.split(':')[1]
+        count = int(r.get(key) or 0)
+
+        if count > 0:
+            # 分単位の統計保存
+            table.put_item(
+                Item={
+                    'PK': f'STATS#{broadcast_id}',
+                    'SK': f'MINUTE#{minute_key}',
+                    'count': count,
+                    'timestamp': timestamp.isoformat(),
+                    'TTL': int((timestamp + timedelta(days=7)).timestamp()),  # 7日後に削除
+                }
+            )
+
+            # チャンネルメタデータの現在リスナー数を更新
+            table.update_item(
+                Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'},
+                UpdateExpression='SET currentListeners = :count, lastUpdated = :ts',
+                ExpressionAttributeValues={
+                    ':count': count,
+                    ':ts': timestamp.isoformat(),
+                }
+            )
+
+    return {'statusCode': 200}
+```
+
+#### 9.4.4 リスナー統計API
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/broadcasts/{id}/listeners` | GET | 現在のリスナー数 |
+| `/broadcasts/{id}/listeners/history` | GET | リスナー数履歴 |
+| `/broadcasts/{id}/listeners/peak` | GET | ピーク統計 |
+| `/stats/top-listeners` | GET | リスナー数ランキング |
+| WebSocket `/ws` | CONNECT | リアルタイム接続 |
+| WebSocket `joinBroadcast` | MESSAGE | チャンネル参加 |
+| WebSocket `leaveBroadcast` | MESSAGE | チャンネル離脱 |
+
+---
+
+### 9.5 地図上の分布（位置情報）システム
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           位置情報・地図分布アーキテクチャ                               │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  位置情報登録                                                                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │───►│  DynamoDB   │             │
+│  │ チャンネル  │    │ POST /venues│    │ 位置登録    │    │ GeoHash     │             │
+│  │ 位置登録    │    │             │    │             │    │  保存       │             │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘             │
+│                                               │                  │                     │
+│                                               ▼                  │                     │
+│                                        ┌─────────────┐           │                     │
+│                                        │  Location   │           │                     │
+│                                        │  Service    │           │                     │
+│                                        │ Place Index │           │                     │
+│                                        └─────────────┘           │                     │
+│                                                                  │                     │
+│  近隣検索                                                         │                     │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │                     │
+│  │   Flutter   │───►│ API Gateway │───►│   Lambda    │◄─────────┘                     │
+│  │ 現在地から  │    │GET /nearby  │    │ GeoHash    │                                 │
+│  │ 検索        │    │             │    │ 検索       │                                 │
+│  └─────────────┘    └─────────────┘    └─────────────┘                                 │
+│         │                                     │                                        │
+│         │                                     ▼                                        │
+│         │                             ┌─────────────┐                                 │
+│         │                             │  Location   │                                 │
+│         │                             │  Service    │                                 │
+│         │                             │ Route Calc  │                                 │
+│         │                             └─────────────┘                                 │
+│         │                                     │                                        │
+│         ▼                                     ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
+│  │                           Flutter Map Widget                                     │   │
+│  │  ┌───────────────────────────────────────────────────────────────────────────┐  │   │
+│  │  │                                                                           │  │   │
+│  │  │     📍 Museum Audio Guide (200m)                                          │  │   │
+│  │  │          ⭐ 4.5 | 👥 23人                                                  │  │   │
+│  │  │                                                                           │  │   │
+│  │  │              📍 Cafe Jazz (500m)                                          │  │   │
+│  │  │                   ⭐ 4.2 | 👥 45人                                         │  │   │
+│  │  │                              🔵 現在地                                     │  │   │
+│  │  │                                                                           │  │   │
+│  │  │                        📍 Station Info (800m)                             │  │   │
+│  │  │                             ⭐ 3.8 | 👥 12人                               │  │   │
+│  │  │                                                                           │  │   │
+│  │  └───────────────────────────────────────────────────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                         │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.5.1 Geohash を使った位置検索設計
+
+```python
+# lambda/geo/geohash_utils.py
+import geohash2 as geohash
+
+GEOHASH_PRECISION = 6  # 約1.2km x 0.6km の精度
+
+def encode_location(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
+    """緯度経度をGeohashに変換"""
+    return geohash.encode(lat, lon, precision)
+
+def get_neighbors(gh: str) -> list:
+    """隣接する8つのGeohashを取得（近隣検索用）"""
+    return geohash.neighbors(gh)
+
+def decode_location(gh: str) -> tuple:
+    """Geohashを緯度経度に変換"""
+    return geohash.decode(gh)
+
+def get_search_hashes(lat: float, lon: float, radius_km: float) -> list:
+    """
+    検索範囲のGeohashリストを生成
+    radius_km: 検索半径（km）
+    """
+    # 精度を半径に基づいて調整
+    if radius_km <= 0.5:
+        precision = 7
+    elif radius_km <= 2:
+        precision = 6
+    elif radius_km <= 10:
+        precision = 5
+    else:
+        precision = 4
+
+    center_hash = geohash.encode(lat, lon, precision)
+    neighbors = geohash.neighbors(center_hash)
+
+    return [center_hash] + neighbors
+```
+
+#### 9.5.2 位置情報登録 Lambda
+
+```python
+# lambda/geo/register_location.py
+import boto3
+import json
+from datetime import datetime
+from geo.geohash_utils import encode_location
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+location_client = boto3.client('location')
+
+PLACE_INDEX_NAME = 'auracast-places'
+
+def handler(event, context):
+    """チャンネルの位置情報を登録"""
+
+    body = json.loads(event['body'])
+    broadcast_id = body['broadcastId']
+    lat = body['latitude']
+    lon = body['longitude']
+
+    # Geohash 生成
+    gh = encode_location(lat, lon)
+    gh_prefix = gh[:4]  # GSI用のプレフィックス
+
+    # Amazon Location Service で住所逆ジオコーディング
+    place_response = location_client.search_place_index_for_position(
+        IndexName=PLACE_INDEX_NAME,
+        Position=[lon, lat],
+        MaxResults=1,
+        Language='ja'
+    )
+
+    address = ''
+    place_name = ''
+    if place_response['Results']:
+        place = place_response['Results'][0]['Place']
+        address = place.get('Label', '')
+        place_name = place.get('AddressNumber', '') or ''
+
+    # DynamoDB に位置情報保存
+    timestamp = datetime.utcnow().isoformat()
+
+    # チャンネルメタデータ更新
+    table.update_item(
+        Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'},
+        UpdateExpression='''
+            SET #loc = :loc, geohash = :gh, address = :addr, updatedAt = :ts
+        ''',
+        ExpressionAttributeNames={'#loc': 'location'},
+        ExpressionAttributeValues={
+            ':loc': {'latitude': str(lat), 'longitude': str(lon)},
+            ':gh': gh,
+            ':addr': address,
+            ':ts': timestamp,
+        }
+    )
+
+    # Geohash インデックス用レコード
+    table.put_item(
+        Item={
+            'PK': f'GEO#{gh_prefix}',
+            'SK': f'BROADCAST#{broadcast_id}',
+            'broadcastId': broadcast_id,
+            'geohash': gh,
+            'latitude': str(lat),
+            'longitude': str(lon),
+            'address': address,
+            'GSI4PK': f'GEOHASH#{gh_prefix}',
+            'GSI4SK': broadcast_id,
+        }
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'geohash': gh,
+            'address': address,
+        })
+    }
+```
+
+#### 9.5.3 近隣チャンネル検索 Lambda
+
+```python
+# lambda/geo/search_nearby.py
+import boto3
+import json
+from math import radians, sin, cos, sqrt, atan2
+from geo.geohash_utils import get_search_hashes, decode_location
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('auracast-main')
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """2点間の距離を計算（km）"""
+    R = 6371  # 地球の半径（km）
+
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+
+    return R * c
+
+def handler(event, context):
+    """現在地から近いチャンネルを検索"""
+
+    params = event.get('queryStringParameters', {}) or {}
+    lat = float(params['latitude'])
+    lon = float(params['longitude'])
+    radius_km = float(params.get('radius', 5))  # デフォルト5km
+    limit = int(params.get('limit', 20))
+
+    # 検索対象のGeohashを取得
+    search_hashes = get_search_hashes(lat, lon, radius_km)
+
+    # 各Geohashプレフィックスで検索
+    candidates = []
+    for gh in search_hashes:
+        gh_prefix = gh[:4]
+
+        response = table.query(
+            IndexName='GSI4',
+            KeyConditionExpression='GSI4PK = :pk',
+            ExpressionAttributeValues={
+                ':pk': f'GEOHASH#{gh_prefix}',
+            }
+        )
+        candidates.extend(response.get('Items', []))
+
+    # 距離計算してフィルタリング
+    results = []
+    seen_ids = set()
+
+    for item in candidates:
+        broadcast_id = item['broadcastId']
+        if broadcast_id in seen_ids:
+            continue
+        seen_ids.add(broadcast_id)
+
+        item_lat = float(item['latitude'])
+        item_lon = float(item['longitude'])
+        distance = haversine_distance(lat, lon, item_lat, item_lon)
+
+        if distance <= radius_km:
+            # チャンネル詳細を取得
+            channel_response = table.get_item(
+                Key={'PK': f'BROADCAST#{broadcast_id}', 'SK': 'META'}
+            )
+
+            if 'Item' in channel_response:
+                channel = channel_response['Item']
+                results.append({
+                    'broadcastId': broadcast_id,
+                    'name': channel.get('name'),
+                    'category': channel.get('category'),
+                    'distance': round(distance, 2),
+                    'distanceUnit': 'km',
+                    'location': {
+                        'latitude': item_lat,
+                        'longitude': item_lon,
+                    },
+                    'address': item.get('address'),
+                    'currentListeners': channel.get('currentListeners', 0),
+                    'avgRating': channel.get('avgRating', 0),
+                })
+
+    # 距離でソート
+    results.sort(key=lambda x: x['distance'])
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'broadcasts': results[:limit],
+            'searchCenter': {'latitude': lat, 'longitude': lon},
+            'searchRadius': radius_km,
+            'totalFound': len(results),
+        })
+    }
+```
+
+#### 9.5.4 Amazon Location Service 設定
+
+```typescript
+// infrastructure/lib/constructs/location-construct.ts
+import * as location from 'aws-cdk-lib/aws-location';
+
+// Place Index（逆ジオコーディング用）
+const placeIndex = new location.CfnPlaceIndex(this, 'AuracastPlaceIndex', {
+  indexName: 'auracast-places',
+  dataSource: 'Esri',  // または 'Here'
+  dataSourceConfiguration: {
+    intendedUse: 'SingleUse',
+  },
+  pricingPlan: 'RequestBasedUsage',
+});
+
+// Map（クライアント側地図表示用）
+const map = new location.CfnMap(this, 'AuracastMap', {
+  mapName: 'auracast-map',
+  configuration: {
+    style: 'VectorEsriNavigation',
+  },
+  pricingPlan: 'RequestBasedUsage',
+});
+
+// Geofence Collection（任意：エリア通知用）
+const geofenceCollection = new location.CfnGeofenceCollection(this, 'AuracastGeofences', {
+  collectionName: 'auracast-geofences',
+  pricingPlan: 'RequestBasedUsage',
+});
+```
+
+#### 9.5.5 位置情報 API エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/broadcasts/nearby` | GET | 近隣チャンネル検索 |
+| `/broadcasts/{id}/location` | GET/PUT | 位置情報取得・更新 |
+| `/venues` | GET/POST | 会場一覧・登録 |
+| `/venues/{id}/broadcasts` | GET | 会場のチャンネル一覧 |
+| `/map/tiles/{z}/{x}/{y}` | GET | 地図タイル（Location Service経由）|
+| `/geocode/reverse` | GET | 逆ジオコーディング |
+
+---
+
+## 10. 実装チェックリスト
+
+### Phase 1: 基盤構築
 - [ ] Flutter プロジェクト初期化
 - [ ] Android Method Channel セットアップ
 - [ ] AWS CDK インフラストラクチャ構築
-- [ ] Cognito ユーザー認証設定
-- [ ] DynamoDB テーブル作成
+- [ ] DynamoDB テーブル作成（Single-Table + 5 GSI）
+- [ ] EventBridge イベントバス設定
 
-### Phase 2: Bluetooth実装（Week 3-4）
+### Phase 2: ユーザー認証システム
+- [ ] Cognito User Pool 設定
+- [ ] ソーシャルログイン（Google/Apple）設定
+- [ ] Post Confirmation Lambda 実装
+- [ ] ユーザープロファイル API 実装
+- [ ] Flutter Amplify Auth 統合
+
+### Phase 3: Bluetooth実装
 - [ ] AuracastScanner実装（BluetoothLeScanner + ScanFilter）
 - [ ] BassGattManager実装（BASS GATT操作）
 - [ ] Add Source / Remove Source操作
 - [ ] Broadcast Receive State監視
 - [ ] Flutter Provider統合
 
-### Phase 3: コア機能（Week 5-6）
+### Phase 4: コア機能
 - [ ] ブロードキャスト一覧UI
 - [ ] 接続・切断フロー
 - [ ] お気に入り保存機能
 - [ ] リスニング履歴
 
-### Phase 4: 高度な機能（Week 7-8）
+### Phase 5: レコメンドシステム
+- [ ] Kinesis Data Streams 設定
+- [ ] ユーザー行動イベント送信実装
+- [ ] Amazon Personalize データセット設定
+- [ ] Personalize ソリューション・キャンペーン作成
+- [ ] レコメンド API Lambda 実装
+- [ ] Flutter レコメンドUI 実装
+
+### Phase 6: 口コミ評価システム
+- [ ] レビュー投稿 API 実装
+- [ ] Amazon Comprehend 感情分析 Lambda 実装
+- [ ] OpenSearch Service クラスター設定
+- [ ] レビュー検索・インデックス Lambda 実装
+- [ ] 評価集計 Lambda 実装
+- [ ] Flutter レビューUI 実装
+
+### Phase 7: リスナー数トラッキング
+- [ ] ElastiCache (Redis) クラスター設定
+- [ ] WebSocket API Gateway 設定
+- [ ] WebSocket 接続/切断ハンドラー Lambda 実装
+- [ ] リスナー参加/離脱処理 Lambda 実装
+- [ ] AppSync Subscription 設定
+- [ ] 定期集計 Lambda（CloudWatch Events）実装
+- [ ] Flutter リアルタイムリスナー数UI 実装
+
+### Phase 8: 地図・位置情報システム
+- [ ] Amazon Location Service 設定（Place Index, Map）
+- [ ] Geohash ユーティリティ実装
+- [ ] 位置情報登録 Lambda 実装
+- [ ] 近隣チャンネル検索 Lambda 実装
+- [ ] Flutter 地図ウィジェット統合（flutter_map or google_maps_flutter）
+- [ ] 位置情報パーミッション処理
+
+### Phase 9: 高度な機能
 - [ ] Broadcast Code入力UI（暗号化放送対応）
 - [ ] 複数BIS選択UI
-- [ ] AppSync リアルタイム同期
-- [ ] Kinesis イベント収集
+- [ ] プッシュ通知（SNS + FCM）
+- [ ] オフラインモード対応
 
-### Phase 5: リリース準備（Week 9-10）
+### Phase 10: リリース準備
 - [ ] CI/CD パイプライン完成
 - [ ] セキュリティ監査
 - [ ] パフォーマンステスト
+- [ ] 負荷テスト（リスナー数同時接続）
 - [ ] Play Store 申請準備
 
 ---
 
-## 10. 重要な考慮事項
+## 11. 重要な考慮事項
 
-### 10.1 技術的制約
+### 11.1 技術的制約
 
 1. **Extended Advertising必須**: `ScanSettings.setLegacy(false)` を設定しないとAuracast放送を検出できない
 
@@ -1657,7 +3944,7 @@ Point-in-Time Recovery: Enabled
 
 3. **BIG Sync制限**: 同様にBIG Syncもイヤホン側で管理。アプリはBASS経由で指示を出すのみ
 
-### 10.2 互換性マトリクス
+### 11.2 互換性マトリクス
 
 | TWS側要件 | 説明 |
 |-----------|------|
@@ -1665,13 +3952,13 @@ Point-in-Time Recovery: Enabled
 | LE Audio Sink | Broadcast Sink機能対応 |
 | PA Sync対応 | Periodic Advertising受信可能 |
 
-### 10.3 セキュリティベストプラクティス
+### 11.3 セキュリティベストプラクティス
 
 - Broadcast Codeは`flutter_secure_storage`で暗号化保存
 - AWS Secrets Managerで本番APIキー管理
 - GATT通信はBLE暗号化レイヤーで保護
 
-### 10.4 デバッグTips
+### 11.4 デバッグTips
 
 ```bash
 # Android BLE HCI snoop log有効化
