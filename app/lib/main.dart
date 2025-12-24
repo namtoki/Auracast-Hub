@@ -3,22 +3,21 @@ import 'package:amplify_flutter/amplify_flutter.dart';
 import 'package:flutter/material.dart';
 import 'amplifyconfiguration.dart';
 import 'screens/auth/login_screen.dart';
-import 'screens/broadcast_list_screen.dart';
+import 'features/home/home_screen.dart';
 import 'services/auth_service.dart';
 
 void main() {
-  runApp(const AuracastHubApp());
+  runApp(const SpatialSyncApp());
 }
 
-class AuracastHubApp extends StatefulWidget {
-  const AuracastHubApp({super.key});
+class SpatialSyncApp extends StatefulWidget {
+  const SpatialSyncApp({super.key});
 
   @override
-  State<AuracastHubApp> createState() => _AuracastHubAppState();
+  State<SpatialSyncApp> createState() => _SpatialSyncAppState();
 }
 
-class _AuracastHubAppState extends State<AuracastHubApp> {
-  bool _isAmplifyConfigured = false;
+class _SpatialSyncAppState extends State<SpatialSyncApp> {
   bool _isLoading = true;
   AuthState _authState = AuthState.unknown;
 
@@ -34,14 +33,8 @@ class _AuracastHubAppState extends State<AuracastHubApp> {
     try {
       await Amplify.addPlugins([AmplifyAuthCognito()]);
       await Amplify.configure(amplifyConfig);
-      setState(() {
-        _isAmplifyConfigured = true;
-      });
       await _checkAuthState();
     } on AmplifyAlreadyConfiguredException {
-      setState(() {
-        _isAmplifyConfigured = true;
-      });
       await _checkAuthState();
     } catch (e) {
       safePrint('Error configuring Amplify: $e');
@@ -76,7 +69,7 @@ class _AuracastHubAppState extends State<AuracastHubApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Auracast Hub',
+      title: 'SpatialSync',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
@@ -102,7 +95,7 @@ class _AuracastHubAppState extends State<AuracastHubApp> {
     }
 
     if (_authState == AuthState.authenticated) {
-      return BroadcastListScreen(onLogout: _handleLogout);
+      return HomeScreen(onLogout: _handleLogout);
     }
 
     return LoginScreen(onLoginSuccess: _handleLoginSuccess);

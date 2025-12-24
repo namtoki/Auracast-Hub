@@ -15,8 +15,11 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   permission_handler: ^11.3.1
-  amplify_flutter: ^2.6.0
-  amplify_auth_cognito: ^2.6.0
+  amplify_flutter: ^2.8.0
+  amplify_auth_cognito: ^2.8.0
+  http: ^1.2.0
+  path_provider: ^2.1.2
+  device_info_plus: ^12.3.0
 
 dev_dependencies:
   flutter_test:
