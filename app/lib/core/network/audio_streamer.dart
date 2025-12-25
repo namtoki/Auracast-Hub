@@ -48,12 +48,16 @@ class AudioStreamer {
 
   Timer? _registrationTimer;
 
+  void Function(ChannelAssignmentPacket assignment)? onChannelAssignment;
+
   /// Start receiving as client.
   Future<void> startClient(
     String hostAddress,
-    void Function(AudioPacket packet) onPacketReceived,
-  ) async {
+    void Function(AudioPacket packet) onPacketReceived, {
+    void Function(ChannelAssignmentPacket assignment)? onChannelAssignment,
+  }) async {
     await stop();
+    this.onChannelAssignment = onChannelAssignment;
 
     // Bind to the same audio port to receive from host
     try {
@@ -90,6 +94,14 @@ class AudioStreamer {
       final datagram = _socket!.receive();
       if (datagram == null) {
         print('[AudioStreamer Client] Received null datagram');
+        return;
+      }
+
+      // Check for channel assignment packet first
+      final channelPacket = ChannelAssignmentPacket.fromBytes(datagram.data);
+      if (channelPacket != null) {
+        print('[AudioStreamer Client] Received channel assignment: $channelPacket');
+        this.onChannelAssignment?.call(channelPacket);
         return;
       }
 
@@ -200,6 +212,46 @@ class AudioStreamer {
   /// Remove a client from the stream.
   void removeClient(String address) {
     _clients.removeWhere((key, client) => client.address.address == address);
+  }
+
+  /// Send channel assignment to a specific client.
+  void sendChannelAssignment({
+    required String clientAddress,
+    required int channelMask,
+    int volume = 100,
+    int delayMs = 0,
+  }) {
+    if (_socket == null) return;
+
+    // Find the client endpoint
+    final client = _clients.values.where(
+      (c) => c.address.address == clientAddress,
+    ).firstOrNull;
+
+    if (client == null) {
+      print('[AudioStreamer] Client not found for channel assignment: $clientAddress');
+      return;
+    }
+
+    final packet = ChannelAssignmentPacket(
+      channelMask: channelMask,
+      volume: volume,
+      delayMs: delayMs,
+    );
+
+    final bytes = packet.toBytes();
+
+    try {
+      _socket!.send(bytes, client.address, client.port);
+      print('[AudioStreamer] Sent channel assignment to $clientAddress: channel=0x${channelMask.toRadixString(16)}, volume=$volume%, delay=${delayMs}ms');
+    } catch (e) {
+      print('[AudioStreamer] Failed to send channel assignment: $e');
+    }
+  }
+
+  /// Get list of connected client addresses.
+  List<String> get connectedClientAddresses {
+    return _clients.values.map((c) => c.address.address).toList();
   }
 
   /// Stop streaming.

@@ -19,6 +19,7 @@ class SyncProtocol {
 
   final _sessionController = StreamController<Session?>.broadcast();
   final _packetController = StreamController<AudioPacket>.broadcast();
+  final _channelAssignmentController = StreamController<ChannelAssignmentPacket>.broadcast();
 
   SyncProtocol()
       : _timeSync = TimeSync(),
@@ -64,6 +65,9 @@ class SyncProtocol {
 
   /// Stream of received audio packets (for clients).
   Stream<AudioPacket> get packetStream => _packetController.stream;
+
+  /// Stream of channel assignment updates (for clients).
+  Stream<ChannelAssignmentPacket> get channelAssignmentStream => _channelAssignmentController.stream;
 
   /// Current session.
   Session? get currentSession => _currentSession;
@@ -130,6 +134,10 @@ class SyncProtocol {
     await _audioStreamer.startClient(
       host.ipAddress,
       (packet) => _packetController.add(packet),
+      onChannelAssignment: (assignment) {
+        print('[SyncProtocol] Received channel assignment: $assignment');
+        _channelAssignmentController.add(assignment);
+      },
     );
 
     // Create local session representation
@@ -179,6 +187,45 @@ class SyncProtocol {
       channelAssignments: assignments,
     );
     _sessionController.add(_currentSession);
+
+    // Send assignment to client if we're host
+    if (_isHost) {
+      _sendChannelAssignmentToClient(assignment);
+    }
+  }
+
+  void _sendChannelAssignmentToClient(ChannelAssignment assignment) {
+    // Find the device's IP address
+    final device = _currentSession?.devices.firstWhere(
+      (d) => d.id == assignment.deviceId,
+      orElse: () => const DeviceInfo(
+        id: '',
+        name: '',
+        model: '',
+        platform: '',
+      ),
+    );
+
+    if (device == null || device.ipAddress == null) {
+      print('[SyncProtocol] Cannot send assignment: device IP not found for ${assignment.deviceId}');
+      return;
+    }
+
+    _audioStreamer.sendChannelAssignment(
+      clientAddress: device.ipAddress!,
+      channelMask: assignment.channel.maskBit,
+      volume: ((assignment.volume ?? 1.0) * 100).toInt(),
+      delayMs: assignment.delayOffsetMs ?? 0,
+    );
+  }
+
+  /// Resend all channel assignments to connected clients.
+  void resendAllChannelAssignments() {
+    if (!_isHost || _currentSession == null) return;
+
+    for (final assignment in _currentSession!.channelAssignments) {
+      _sendChannelAssignmentToClient(assignment);
+    }
   }
 
   /// Start playback.
@@ -231,6 +278,9 @@ class SyncProtocol {
     }
     if (!_packetController.isClosed) {
       await _packetController.close();
+    }
+    if (!_channelAssignmentController.isClosed) {
+      await _channelAssignmentController.close();
     }
   }
 }

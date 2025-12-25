@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -26,6 +27,7 @@ class _ClientScreenState extends State<ClientScreen> {
   late SyncProtocol _syncProtocol;
   late AudioEngine _audioEngine;
   late AudioBuffer _audioBuffer;
+  late ChannelSplitter _channelSplitter;
   Session? _session;
   bool _isConnected = false;
   bool _isSynced = false;
@@ -34,6 +36,11 @@ class _ClientScreenState extends State<ClientScreen> {
   Timer? _playbackTimer;
   BufferStats? _bufferStats;
 
+  // Channel assignment from host
+  int _assignedChannelMask = 0x03; // Default to stereo
+  int _assignedVolume = 100;
+  int _assignedDelayMs = 0;
+
   @override
   void initState() {
     super.initState();
@@ -41,6 +48,7 @@ class _ClientScreenState extends State<ClientScreen> {
     _audioEngine = AudioEngine();
     // Increase buffer to 150ms for more stable playback over WiFi
     _audioBuffer = AudioBuffer(targetBufferMs: 150);
+    _channelSplitter = ChannelSplitter();
     _initializeClient();
   }
 
@@ -64,6 +72,18 @@ class _ClientScreenState extends State<ClientScreen> {
           _session = session;
           _isConnected = session != null;
         });
+      }
+    });
+
+    // Listen for channel assignment updates
+    _syncProtocol.channelAssignmentStream.listen((assignment) {
+      if (mounted) {
+        setState(() {
+          _assignedChannelMask = assignment.channelMask;
+          _assignedVolume = assignment.volume;
+          _assignedDelayMs = assignment.delayMs;
+        });
+        print('[ClientScreen] Channel assignment updated: mask=0x${assignment.channelMask.toRadixString(16)}, volume=${assignment.volume}%, delay=${assignment.delayMs}ms');
       }
     });
 
@@ -112,25 +132,91 @@ class _ClientScreenState extends State<ClientScreen> {
       if (packets.isNotEmpty) {
         totalPacketsPlayed += packets.length;
         if (totalPacketsPlayed <= 10 || loopCount % 200 == 0) {
-          print('[ClientScreen] Playing ${packets.length} packets, total: $totalPacketsPlayed, buffer: ${_audioBuffer.bufferedPackets}');
+          print('[ClientScreen] Playing ${packets.length} packets, total: $totalPacketsPlayed, buffer: ${_audioBuffer.bufferedPackets}, channel: 0x${_assignedChannelMask.toRadixString(16)}');
         }
       }
 
       for (final packet in packets) {
+        // Extract assigned channel from stereo audio
+        final audioData = _extractAssignedChannel(packet.payload);
+
         // Queue audio for playback
         _audioEngine.queueAudio(
-          data: packet.payload,
+          data: audioData,
           playTimeUs: packet.playTimeUs,
-          channelMask: packet.channelMask,
+          channelMask: _assignedChannelMask,
         );
       }
     });
   }
 
+  /// Extract assigned channel from stereo audio data.
+  /// Returns stereo data with only the assigned channel.
+  Uint8List _extractAssignedChannel(Uint8List stereoData) {
+    // 0x01 = Left only, 0x02 = Right only, 0x03 = Stereo
+    if (_assignedChannelMask == 0x03) {
+      // Stereo - return as-is
+      return stereoData;
+    }
+
+    // For L or R only, extract the channel and duplicate to both speakers
+    final channelIndex = (_assignedChannelMask == 0x01) ? 0 : 1;
+    final monoData = _channelSplitter.extractChannel(stereoData, channelIndex);
+
+    // Convert mono to stereo (duplicate the channel)
+    return _monoToStereo(monoData);
+  }
+
+  /// Convert mono audio to stereo by duplicating the channel.
+  Uint8List _monoToStereo(Uint8List monoData) {
+    final stereoData = Uint8List(monoData.length * 2);
+    const bytesPerSample = 2; // 16-bit
+
+    for (var i = 0; i < monoData.length; i += bytesPerSample) {
+      // Copy sample to left channel
+      stereoData[i * 2] = monoData[i];
+      stereoData[i * 2 + 1] = monoData[i + 1];
+      // Copy same sample to right channel
+      stereoData[i * 2 + 2] = monoData[i];
+      stereoData[i * 2 + 3] = monoData[i + 1];
+    }
+
+    return stereoData;
+  }
+
+  /// Get the display name for the assigned channel.
+  String get _assignedChannelName {
+    switch (_assignedChannelMask) {
+      case 0x01:
+        return 'Left';
+      case 0x02:
+        return 'Right';
+      case 0x03:
+        return 'Stereo';
+      case 0x04:
+        return 'Center';
+      default:
+        return 'Unknown';
+    }
+  }
+
+  String get _assignedChannelCode {
+    switch (_assignedChannelMask) {
+      case 0x01:
+        return 'L';
+      case 0x02:
+        return 'R';
+      case 0x03:
+        return 'STEREO';
+      case 0x04:
+        return 'C';
+      default:
+        return '?';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final assignment = _session?.getChannelAssignment(widget.localDevice.id);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Client'),
@@ -255,7 +341,7 @@ class _ClientScreenState extends State<ClientScreen> {
                         width: 120,
                         height: 120,
                         decoration: BoxDecoration(
-                          color: _getChannelColor(assignment?.channel),
+                          color: _getChannelColorFromMask(_assignedChannelMask),
                           shape: BoxShape.circle,
                           border: Border.all(
                             color: Theme.of(context).primaryColor,
@@ -267,14 +353,14 @@ class _ClientScreenState extends State<ClientScreen> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
-                                assignment?.channel.code ?? 'STEREO',
+                                _assignedChannelCode,
                                 style: Theme.of(context)
                                     .textTheme
                                     .headlineMedium
                                     ?.copyWith(fontWeight: FontWeight.bold),
                               ),
                               Text(
-                                assignment?.channel.displayName ?? 'Stereo',
+                                _assignedChannelName,
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
@@ -282,19 +368,21 @@ class _ClientScreenState extends State<ClientScreen> {
                         ),
                       ),
                     ),
-                    if (assignment != null) ...[
-                      const SizedBox(height: 16),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.volume_up, size: 20),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.volume_up, size: 20),
+                        const SizedBox(width: 8),
+                        Text('Volume: $_assignedVolume%'),
+                        if (_assignedDelayMs != 0) ...[
+                          const SizedBox(width: 16),
+                          const Icon(Icons.timer, size: 20),
                           const SizedBox(width: 8),
-                          Text(
-                            'Volume: ${((assignment.volume ?? 1.0) * 100).toInt()}%',
-                          ),
+                          Text('Delay: ${_assignedDelayMs}ms'),
                         ],
-                      ),
-                    ],
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -361,14 +449,16 @@ class _ClientScreenState extends State<ClientScreen> {
     );
   }
 
-  Color _getChannelColor(AudioChannel? channel) {
-    switch (channel) {
-      case AudioChannel.left:
-        return Colors.blue[50]!;
-      case AudioChannel.right:
-        return Colors.red[50]!;
-      case AudioChannel.center:
-        return Colors.green[50]!;
+  Color _getChannelColorFromMask(int channelMask) {
+    switch (channelMask) {
+      case 0x01: // Left
+        return Colors.blue[100]!;
+      case 0x02: // Right
+        return Colors.red[100]!;
+      case 0x04: // Center
+        return Colors.green[100]!;
+      case 0x03: // Stereo
+        return Colors.purple[100]!;
       default:
         return Colors.grey[100]!;
     }

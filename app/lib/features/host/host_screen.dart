@@ -118,8 +118,14 @@ class _HostScreenState extends State<HostScreen> {
               ListTile(
                 leading: const Icon(Icons.music_note),
                 title: const Text('Test Tone (440Hz)'),
-                subtitle: const Text('10 seconds sine wave'),
+                subtitle: const Text('10 seconds mono sine wave'),
                 onTap: () => Navigator.pop(context, 'test_tone.m4a'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.surround_sound),
+                title: const Text('L/R Test Tone'),
+                subtitle: const Text('L=440Hz (low), R=880Hz (high)'),
+                onTap: () => Navigator.pop(context, 'lr_test_tone.m4a'),
               ),
             ],
           ),

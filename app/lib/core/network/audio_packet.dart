@@ -85,3 +85,55 @@ class AudioPacket {
   String toString() =>
       'AudioPacket(seq: $sequenceNumber, playTime: $playTimeUs, channels: 0x${channelMask.toRadixString(16)}, size: ${payload.length})';
 }
+
+/// Control packet for channel assignment.
+/// Format:
+/// - Magic: 4 bytes "CHAN"
+/// - ChannelMask: 1 byte (assigned channel for this client)
+/// - Volume: 1 byte (0-100)
+/// - DelayMs: 2 bytes (signed, delay offset)
+class ChannelAssignmentPacket {
+  static const int magic = 0x4348414E; // "CHAN"
+  static const int packetSize = 8;
+
+  final int channelMask;
+  final int volume; // 0-100
+  final int delayMs;
+
+  const ChannelAssignmentPacket({
+    required this.channelMask,
+    this.volume = 100,
+    this.delayMs = 0,
+  });
+
+  Uint8List toBytes() {
+    final buffer = Uint8List(packetSize);
+    final view = ByteData.sublistView(buffer);
+
+    view.setUint32(0, magic);
+    view.setUint8(4, channelMask);
+    view.setUint8(5, volume);
+    view.setInt16(6, delayMs);
+
+    return buffer;
+  }
+
+  static ChannelAssignmentPacket? fromBytes(Uint8List data) {
+    if (data.length < packetSize) return null;
+
+    final view = ByteData.sublistView(data);
+
+    final packetMagic = view.getUint32(0);
+    if (packetMagic != magic) return null;
+
+    return ChannelAssignmentPacket(
+      channelMask: view.getUint8(4),
+      volume: view.getUint8(5),
+      delayMs: view.getInt16(6),
+    );
+  }
+
+  @override
+  String toString() =>
+      'ChannelAssignmentPacket(channel: 0x${channelMask.toRadixString(16)}, volume: $volume%, delay: ${delayMs}ms)';
+}

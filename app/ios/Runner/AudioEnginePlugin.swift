@@ -154,16 +154,22 @@ class AudioEnginePlugin: NSObject {
             let url = URL(fileURLWithPath: path)
             audioFile = try AVAudioFile(forReading: url)
 
-            guard let file = audioFile, let player = playerNode else {
+            guard let file = audioFile, let player = playerNode, let engine = audioEngine else {
                 result(FlutterError(code: "FILE_ERROR", message: "Failed to open file", details: nil))
                 return
             }
 
-            // Install tap to capture audio for streaming
-            let format = file.processingFormat
-            let frameCapacity = AVAudioFrameCount(sampleRate * Double(bufferSizeMs) / 1000.0)
+            // Use the file's processing format for connection
+            let fileFormat = file.processingFormat
 
-            player.installTap(onBus: 0, bufferSize: frameCapacity, format: format) { [weak self] buffer, time in
+            // Reconnect player with file's format to avoid format mismatch
+            engine.disconnectNodeOutput(player)
+            engine.connect(player, to: engine.mainMixerNode, format: fileFormat)
+
+            // Install tap with nil format to use the node's current output format
+            let frameCapacity = AVAudioFrameCount(fileFormat.sampleRate * Double(bufferSizeMs) / 1000.0)
+
+            player.installTap(onBus: 0, bufferSize: frameCapacity, format: nil) { [weak self] buffer, time in
                 self?.handleCapturedAudio(buffer: buffer, time: time)
             }
 
