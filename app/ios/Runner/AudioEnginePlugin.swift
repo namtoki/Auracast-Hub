@@ -278,12 +278,8 @@ class AudioEnginePlugin: NSObject {
             // Schedule for future playback
             let delayFrames = AVAudioFramePosition(Double(delayUs) / 1_000_000.0 * sampleRate)
             let hostTime = mach_absolute_time() + UInt64(delayUs * 1000) // nanoseconds
-
-            if let time = AVAudioTime(hostTime: hostTime, sampleTime: delayFrames, atRate: sampleRate) {
-                player.scheduleBuffer(buffer, at: time, options: [], completionHandler: nil)
-            } else {
-                player.scheduleBuffer(buffer, completionHandler: nil)
-            }
+            let time = AVAudioTime(hostTime: hostTime, sampleTime: delayFrames, atRate: sampleRate)
+            player.scheduleBuffer(buffer, at: time, options: [], completionHandler: nil)
         } else {
             // Play immediately (we're behind)
             player.scheduleBuffer(buffer, completionHandler: nil)
