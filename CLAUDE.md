@@ -8,9 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 複数のスマートフォンを使用してサラウンドシステムを実現。各デバイスが L/R/Center チャンネルとして機能し、Snapcast方式のタイムスタンプ同期で ±5ms 以内の同期精度を目指す。
 
-### Current Phase: Phase 1 MVP（iOS限定、手動割り当て）
+### Current Phase: Phase 1+3 MVP（iOS + Android、手動割り当て）
 
-- iOS デバイス間での同期再生
+- iOS / Android デバイス間での同期再生
 - 手動 L/R チャンネル割り当て
 - 100ms バッファで安定動作
 - AWS バックエンド（API Gateway + Lambda + DynamoDB）
@@ -19,6 +19,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Flutter/iOS**: Use fvm directly (outside devbox shell) for Xcode compatibility
 - **Terraform/AWS**: Use devbox shell for JDK17, Terraform, AWS CLI
+
+### Prerequisites
+
+```bash
+# Install CocoaPods (required for iOS plugins)
+brew install cocoapods
+
+# Install iOS dependencies
+cd app/ios && pod install
+```
 
 ```bash
 # Flutter/iOS development (do NOT use devbox shell)
@@ -92,6 +102,9 @@ terraform output          # Show output values (including API Gateway URL)
 - **AppDelegate.swift** - Plugin registration
 - **AudioEnginePlugin.swift** - AVAudioEngine for low-latency audio
 
+### Android Native Layer (`app/android/app/src/main/kotlin/.../audio/`)
+- **AudioEnginePlugin.kt** - AudioTrack + MediaCodec for low-latency audio
+
 ### AWS Infrastructure (`infrastructure/terraform/`)
 - **cognito.tf** - User Pool, Identity Pool, IAM roles
 - **dynamodb.tf** - UserSettings, DeviceProfiles, Sessions tables
@@ -128,9 +141,9 @@ Magic(4B) | Version(1B) | SeqNum(4B) | PlayTime(8B) | ChMask(1B) | Len(2B) | Pay
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| **Phase 1** | iOS MVP, manual L/R assignment, 100ms buffer | In Progress |
+| **Phase 1** | iOS MVP, manual L/R assignment, 100ms buffer | Complete |
 | Phase 2 | UWB位置検出, 自動チャンネル割り当て | Planned |
-| Phase 3 | Android対応, AudioPlaybackCapture | Planned |
+| **Phase 3** | Android対応, AudioTrack + MediaCodec | Complete |
 | Phase 4 | 最適化, 5.1ch対応, 50ms以下遅延 | Planned |
 
 ## Reference Documentation

@@ -28,18 +28,20 @@
 
 | Phase | 内容 | 状態 |
 |-------|------|------|
-| **Phase 1** | iOS MVP、手動L/R割り当て、100msバッファ | In Progress |
+| **Phase 1** | iOS MVP、手動L/R割り当て、100msバッファ | Complete |
 | Phase 2 | UWB位置検出、自動チャンネル割り当て | Planned |
-| Phase 3 | Android対応、AudioPlaybackCapture | Planned |
+| **Phase 3** | Android対応、AudioTrack + MediaCodec | Complete |
 | Phase 4 | 最適化、5.1ch対応、50ms以下遅延 | Planned |
 
 ## Requirements
 
-- **iOS 15+** (Phase 1)
-- macOS with Xcode 15+
+- **iOS 15+** / **Android 13+** (API 33)
+- macOS with Xcode 15+ (iOS開発)
+- Android Studio / Android SDK (Android開発)
 - [fvm](https://fvm.app/) - Flutter バージョン管理
+- [CocoaPods](https://cocoapods.org/) - iOS依存関係管理
 - [Devbox](https://www.jetify.com/devbox) - インフラ作業用（JDK17, Terraform, AWS CLI）
-- Apple Developer Program（実機テスト用）
+- Apple Developer Program（iOS実機テスト用）
 
 ## Quick Start
 
@@ -48,6 +50,9 @@
 ```bash
 # fvmがない場合はインストール
 dart pub global activate fvm
+
+# CocoaPodsのインストール（iOS依存関係管理に必要）
+brew install cocoapods
 
 # Flutterバージョンをインストール
 cd app
@@ -65,6 +70,9 @@ curl -fsSL https://get.jetify.com/devbox | bash
 ```bash
 cd app
 fvm flutter pub get
+
+# iOS依存関係のインストール
+cd ios && pod install && cd ..
 ```
 
 ### 3. AWSインフラのデプロイ
@@ -187,6 +195,7 @@ cd app
 fvm flutter pub get           # 依存関係インストール
 fvm flutter run               # 実行
 fvm flutter build ios         # iOSビルド
+fvm flutter build apk         # Android APKビルド
 fvm flutter analyze           # 静的解析
 fvm flutter test              # テスト
 
