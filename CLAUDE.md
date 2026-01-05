@@ -4,161 +4,233 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**SpatialSync** - 位置ベースチャンネル分離オーディオシステム
+**HiFi Audio Platform** - オーディオ機器データベース＆価格比較プラットフォーム
 
-複数のスマートフォンを使用してサラウンドシステムを実現。各デバイスが L/R/Center チャンネルとして機能し、Snapcast方式のタイムスタンプ同期で ±5ms 以内の同期精度を目指す。
+HiFi オーディオ機器のデータベース、互換性チェック、価格比較を提供するWebプラットフォーム。
+トリバゴ的なアプローチで、複数ショップの最安価格を一括表示する。
 
-### Current Phase: Phase 1+3 MVP（iOS + Android、手動割り当て）
+### Current Phase: Phase 1 MVP
 
-- iOS / Android デバイス間での同期再生
-- 手動 L/R チャンネル割り当て
-- 100ms バッファで安定動作
-- AWS バックエンド（API Gateway + Lambda + DynamoDB）
+- 機器データベース（スピーカー、アンプ、DAC等）
+- 組み合わせ互換性チェック
+- 基本検索機能
+- Next.js + AWS サーバーレスアーキテクチャ
+
+## Tech Stack
+
+### Frontend
+- **Next.js 14** (App Router) + TypeScript
+- **Tailwind CSS** for styling
+- **TanStack Query** for state management
+- **CloudFront + S3** for hosting
+
+### Backend
+- **AWS Lambda** (Node.js)
+- **API Gateway** (REST API)
+- **Aurora PostgreSQL Serverless v2** for main database
+- **DynamoDB** for sessions
+- **OpenSearch** for search (Phase 2+)
+- **Cognito** for authentication (Phase 3+)
+
+### Infrastructure
+- **Terraform** for IaC
+- **GitHub Actions** for CI/CD
 
 ## Development Environment
-
-- **Flutter/iOS**: Use fvm directly (outside devbox shell) for Xcode compatibility
-- **Terraform/AWS**: Use devbox shell for JDK17, Terraform, AWS CLI
 
 ### Prerequisites
 
 ```bash
-# Install CocoaPods (required for iOS plugins)
-brew install cocoapods
+# Node.js (v20+)
+nvm install 20
+nvm use 20
 
-# Install iOS dependencies
-cd app/ios && pod install
+# pnpm
+npm install -g pnpm
+
+# AWS CLI
+brew install awscli
+aws configure
+
+# Terraform
+brew install terraform
+
+# Docker (local DB)
+brew install --cask docker
 ```
 
-```bash
-# Flutter/iOS development (do NOT use devbox shell)
-cd app
-fvm flutter run
+### Local Development
 
-# Infrastructure work
-devbox shell    # Enter dev environment (JDK17 + Terraform + AWS CLI)
+```bash
+# Frontend
+cd frontend
+pnpm install
+pnpm dev
+
+# Backend (serverless offline)
+cd backend
+pnpm install
+pnpm dev
+
+# Local PostgreSQL
+docker-compose up -d postgres
 ```
 
 ## Common Commands
 
 ```bash
-# Flutter commands (run from app/ directory, WITHOUT devbox shell)
-cd app
-fvm flutter pub get           # Install dependencies
-fvm flutter run               # Run on connected device/simulator
-fvm flutter build ios         # Build for iOS
-fvm flutter analyze           # Run static analysis
-fvm flutter test              # Run tests
+# Frontend (run from frontend/ directory)
+pnpm dev              # Start dev server
+pnpm build            # Production build
+pnpm lint             # Run ESLint
+pnpm test             # Run tests
 
-# Run on multiple devices (simulator + real device)
-xcrun simctl boot "iPhone 15"
-fvm flutter run -d <device_id_1> -d <device_id_2>
+# Backend (run from backend/ directory)
+pnpm dev              # Serverless offline
+pnpm deploy           # Deploy to AWS
+pnpm test             # Run tests
 
-# Terraform commands (run from infrastructure/terraform/, WITH devbox shell)
-devbox shell
-cd infrastructure/terraform
-terraform init            # Initialize Terraform
-terraform plan            # Preview changes
-terraform apply           # Deploy infrastructure
-terraform output          # Show output values (including API Gateway URL)
+# Terraform (run from infrastructure/terraform/)
+terraform init        # Initialize
+terraform plan        # Preview changes
+terraform apply       # Deploy infrastructure
+
+# Database
+docker-compose up -d postgres   # Start local DB
+pnpm db:migrate                 # Run migrations
+pnpm db:seed                    # Seed data
 ```
 
 ## Architecture
 
-### Flutter Layer (`app/lib/`)
+### Project Structure
 
-#### Core (`core/`)
-- **audio/audio_engine.dart** - Platform channel wrapper for iOS AVAudioEngine
-- **audio/audio_buffer.dart** - Jitter buffer for smooth playback
-- **audio/channel_splitter.dart** - L/R channel separation
-- **network/sync_protocol.dart** - Main sync coordinator
-- **network/time_sync.dart** - NTP-style time synchronization
-- **network/audio_streamer.dart** - UDP audio streaming
-- **network/discovery_service.dart** - Multicast host discovery
-- **network/audio_packet.dart** - Audio packet format (SSYN header)
-
-#### Models (`models/`)
-- **session.dart** - Session state and configuration
-- **device_info.dart** - Device information
-- **channel_assignment.dart** - L/R/Stereo channel assignment
-- **user_settings.dart** - User preferences (synced to DynamoDB)
-- **audio_channel.dart** - Channel type definitions
-
-#### Services (`services/`)
-- **auth_service.dart** - AWS Cognito authentication
-- **api_service.dart** - AWS API Gateway client
-- **settings_service.dart** - Local + cloud settings sync
-
-#### Features (`features/`)
-- **home/home_screen.dart** - Role selection (Host/Client)
-- **host/host_screen.dart** - Audio source selection, playback control
-- **client/client_screen.dart** - Sync status, channel display
-- **setup/manual_assign_screen.dart** - L/R channel assignment UI
-
-#### Auth (`screens/auth/`)
-- Login, signup, email verification, password reset screens
-
-### iOS Native Layer (`app/ios/Runner/`)
-- **AppDelegate.swift** - Plugin registration
-- **AudioEnginePlugin.swift** - AVAudioEngine for low-latency audio
-
-### Android Native Layer (`app/android/app/src/main/kotlin/.../audio/`)
-- **AudioEnginePlugin.kt** - AudioTrack + MediaCodec for low-latency audio
-
-### AWS Infrastructure (`infrastructure/terraform/`)
-- **cognito.tf** - User Pool, Identity Pool, IAM roles
-- **dynamodb.tf** - UserSettings, DeviceProfiles, Sessions tables
-- **lambda.tf** - Settings, DeviceProfiles, Sessions Lambda functions
-- **api_gateway.tf** - REST API with Cognito authorizer
-- **lambda/** - Python Lambda function source code
-
-### Platform Channel Contract
-
-Audio Engine (`com.spatialsync.audio/`):
-- Method Channel: `initialize`, `startCapture`, `stopCapture`, `startPlayback`, `stopPlayback`, `queueAudio`, `setChannelVolume`
-- Event Channel: Audio frame events for streaming
-
-## Key Technical Details
-
-### Audio Packet Format
 ```
-Magic(4B) | Version(1B) | SeqNum(4B) | PlayTime(8B) | ChMask(1B) | Len(2B) | Payload
-"SSYN"      0x01          sequence     μs timestamp   0x03=stereo   size      Opus/PCM
+/hifi-audio-platform
+├── frontend/                    # Next.js application
+│   ├── src/
+│   │   ├── app/                 # App Router pages
+│   │   ├── components/          # React components
+│   │   ├── hooks/               # Custom hooks
+│   │   ├── lib/                 # Utilities
+│   │   ├── services/            # API clients
+│   │   └── types/               # TypeScript types
+│   └── package.json
+│
+├── backend/                     # Lambda functions
+│   ├── functions/
+│   │   ├── equipment/           # Equipment CRUD
+│   │   ├── price/               # Price crawler & API
+│   │   ├── user/                # User management
+│   │   └── shared/              # Common utilities
+│   └── serverless.yml
+│
+├── infrastructure/              # Terraform
+│   └── terraform/
+│       ├── main.tf
+│       ├── rds.tf
+│       ├── lambda.tf
+│       └── ...
+│
+└── scripts/                     # Utility scripts
 ```
 
-### Time Sync Protocol
-- NTP-style 4-timestamp exchange
-- RTT = (T4 - T1) - (T3 - T2)
-- Offset = ((T2 - T1) + (T3 - T4)) / 2
-- Median filtering for outlier removal
+### Database Schema (PostgreSQL)
 
-### Network Ports
-- Time Sync: UDP 5350 (避けるべき: 5353はmDNSが使用)
-- Discovery: UDP 5354 (Multicast 239.255.255.250)
-- Audio Stream: UDP 5355
+Main tables:
+- `categories` - Equipment categories (speaker, amplifier, dac, etc.)
+- `brands` - Audio brands
+- `equipment` - Equipment master with specs (JSONB)
+- `compatibility` - Equipment compatibility scores
+- `shops` - Online/physical shops
+- `prices` - Price history (partitioned)
+- `user_profiles` - User accounts (Cognito linked)
+- `user_systems` - User equipment setups
+- `reviews` - User reviews
+
+### API Endpoints
+
+```
+# Equipment
+GET    /api/equipment                 # List with filters
+GET    /api/equipment/:slug           # Detail
+GET    /api/equipment/:slug/prices    # Prices
+GET    /api/equipment/:slug/compatibility
+
+# Search
+GET    /api/search                    # Full-text search
+POST   /api/search/compatibility      # Compatibility search
+
+# Prices
+GET    /api/prices/lowest/:id         # Lowest price
+GET    /api/prices/history/:id        # Price history
+
+# Users (authenticated)
+GET    /api/users/me
+GET    /api/systems
+POST   /api/reviews
+```
 
 ## Development Phases
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| **Phase 1** | iOS MVP, manual L/R assignment, 100ms buffer | Complete |
-| Phase 2 | UWB位置検出, 自動チャンネル割り当て | Planned |
-| **Phase 3** | Android対応, AudioTrack + MediaCodec | Complete |
-| Phase 4 | 最適化, 5.1ch対応, 50ms以下遅延 | Planned |
+| **Phase 1** | MVP: Equipment DB, compatibility, basic search | In Progress |
+| Phase 2 | Price comparison, crawlers, caching | Planned |
+| Phase 3 | User accounts, reviews, my systems | Planned |
+| Phase 4 | Shop/demo info, maps integration | Planned |
+| Phase 5 | Articles/CMS, editorial workflow | Planned |
+
+## Key Technical Details
+
+### Equipment Specs (JSONB)
+
+```typescript
+// Speaker
+{
+  impedance_ohm: 8,
+  sensitivity_db: 89,
+  frequency_hz: [35, 40000],
+  power_w_min: 30,
+  power_w_max: 150
+}
+
+// Amplifier
+{
+  output_w_8ohm: 100,
+  output_w_4ohm: 200,
+  thd_percent: 0.05,
+  input_types: ["RCA", "XLR"]
+}
+```
+
+### Compatibility Calculation
+
+Score 1-5 based on:
+- Power matching (amp output vs speaker requirements)
+- Impedance matching
+- Source compatibility
+
+### Price Crawling (Phase 2)
+
+- EventBridge: Daily scheduled crawls
+- SQS: Job queue management
+- Targets: Amazon, Rakuten, Soundhouse, Yodobashi
 
 ## Reference Documentation
 
-The `request.md` file contains detailed technical specifications:
-- Snapcast-style synchronization algorithm
-- Audio chunk format and time sync protocol
-- AWS backend architecture diagrams
-- DynamoDB table schemas
-- Evaluation metrics for each phase
-- Reference apps (Snapcast, SoundSeeder, AmpMe)
+The `request.md` file contains detailed specifications:
+- System architecture diagrams
+- Complete database schema (SQL)
+- API design and response examples
+- Terraform configurations
+- Cost estimates per phase
+- Evaluation metrics
 
-## Post-Deployment Steps
+## Cost Estimates (Monthly)
 
-1. Run `terraform apply` to deploy AWS infrastructure
-2. Get API Gateway URL from `terraform output api_gateway_url`
-3. Update `app/lib/services/api_service.dart` with the URL
-4. Update `app/lib/amplifyconfiguration.dart` with Cognito config
+| Phase | Cost |
+|-------|------|
+| Phase 1 MVP | ~$60-110 |
+| Phase 2-3 | ~$185 |
+| Production | ~$400-550 |
