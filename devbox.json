@@ -5,20 +5,28 @@
     "pnpm@latest",
     "terraform@latest",
     "awscli2@latest",
-    "postgresql@15"
+    "postgresql@15",
+    "colima@latest",
+    "docker-compose@latest"
   ],
   "shell": {
     "init_hook": [
       "echo 'HiFi Audio Platform Development Environment'",
       "echo 'Node.js:' $(node --version)",
       "echo 'pnpm:' $(pnpm --version)",
-      "echo 'Terraform:' $(terraform --version | head -1)"
+      "echo 'Terraform:' $(terraform --version | head -1)",
+      "echo ''",
+      "echo 'Run: devbox run start to launch all services'"
     ],
     "scripts": {
+      "start": "colima start && docker-compose up -d",
+      "stop": "docker-compose down && colima stop",
       "dev:frontend": "cd frontend && pnpm dev",
-      "dev:backend": "cd backend && pnpm dev",
-      "db:start": "docker-compose up -d postgres",
-      "db:stop": "docker-compose down"
+      "dev:backend": "docker-compose up backend",
+      "db:migrate": "docker-compose exec backend rails db:migrate",
+      "db:seed": "docker-compose exec backend rails db:seed",
+      "db:console": "docker-compose exec backend rails console",
+      "logs": "docker-compose logs -f backend"
     }
   }
 }

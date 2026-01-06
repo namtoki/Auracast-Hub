@@ -45,23 +45,26 @@
 - **TanStack Query** for data fetching
 
 ### Backend
-- **AWS Lambda** (Node.js)
-- **API Gateway** (REST API)
-- **Aurora PostgreSQL Serverless v2**
+- **Ruby on Rails 8.0** (API mode)
+- **Ruby 3.3**
+- **PostgreSQL** (Aurora Serverless v2)
+- **ECS Fargate** for container hosting
 
 ### Infrastructure
-- **CloudFront + S3** for hosting
-- **Cognito** for authentication
-- **OpenSearch** for full-text search
+- **CloudFront + S3** for frontend hosting
+- **ALB** for API load balancing
+- **ECR** for container registry
+- **Cognito** for authentication (Phase 3+)
+- **OpenSearch** for full-text search (Phase 2+)
 - **Terraform** for IaC
 
 ## Requirements
 
 - Node.js 20+
 - pnpm
+- Docker (Colima or Docker Desktop)
 - AWS CLI (configured)
 - Terraform 1.5+
-- Docker (for local development)
 
 ## Quick Start
 
@@ -75,39 +78,48 @@ nvm use 20
 # pnpm
 npm install -g pnpm
 
+# Docker (Colima推奨)
+brew install colima
+colima start
+
 # AWS CLI
 brew install awscli
 aws configure
 
 # Terraform
 brew install terraform
-
-# Docker
-brew install --cask docker
 ```
 
 ### 2. ローカル開発
 
 ```bash
 # リポジトリクローン
-git clone https://github.com/xxx/hifi-audio-platform
-cd hifi-audio-platform
+git clone https://github.com/namtoki/HiFiHi
+cd HiFiHi
 
-# フロントエンド
+# 全サービス起動（PostgreSQL, Redis, Rails）
+docker-compose up -d
+
+# フロントエンド（別ターミナル）
 cd frontend
 pnpm install
 pnpm dev
-
-# バックエンド（別ターミナル）
-cd backend
-pnpm install
-pnpm dev
-
-# ローカルDB
-docker-compose up -d postgres
 ```
 
-### 3. AWSインフラのデプロイ
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:3001/api
+
+### 3. データベースセットアップ
+
+```bash
+# マイグレーション実行
+docker-compose exec backend rails db:migrate
+
+# シードデータ投入
+docker-compose exec backend rails db:seed
+```
+
+### 4. AWSインフラのデプロイ
 
 ```bash
 cd infrastructure/terraform
@@ -119,7 +131,7 @@ terraform apply
 ## Project Structure
 
 ```
-/hifi-audio-platform
+/HiFiHi
 ├── frontend/                    # Next.js application
 │   ├── src/
 │   │   ├── app/                 # App Router pages
@@ -130,38 +142,52 @@ terraform apply
 │   │   └── types/               # TypeScript types
 │   └── package.json
 │
-├── backend/                     # Lambda functions
-│   ├── functions/
-│   │   ├── equipment/           # Equipment CRUD
-│   │   ├── price/               # Price crawler & API
-│   │   ├── user/                # User management
-│   │   └── shared/              # Common utilities
-│   └── serverless.yml
+├── backend/                     # Ruby on Rails API
+│   ├── app/
+│   │   ├── controllers/api/     # API controllers
+│   │   ├── models/              # ActiveRecord models
+│   │   └── serializers/         # JSON serializers
+│   ├── config/
+│   │   ├── routes.rb            # API routes
+│   │   └── database.yml         # DB configuration
+│   ├── db/
+│   │   ├── migrate/             # Database migrations
+│   │   └── seeds.rb             # Seed data
+│   ├── Dockerfile               # Production container
+│   └── Gemfile                  # Ruby dependencies
 │
 ├── infrastructure/              # Terraform
 │   └── terraform/
-│       ├── main.tf
-│       ├── rds.tf
-│       ├── lambda.tf
-│       ├── cloudfront.tf
-│       └── ...
+│       ├── main.tf              # Provider configuration
+│       ├── vpc.tf               # VPC, subnets
+│       ├── rds.tf               # Aurora PostgreSQL
+│       ├── ecs.tf               # ECS Fargate
+│       ├── ecr.tf               # Container registry
+│       ├── alb.tf               # Load balancer
+│       ├── s3.tf                # S3 buckets
+│       ├── cloudfront.tf        # CDN
+│       └── outputs.tf           # Output values
 │
-├── scripts/                     # Utility scripts
-└── docs/                        # Documentation
+└── docker-compose.yml           # Local development
 ```
 
 ## Database Schema
 
-主要テーブル:
+主要テーブル (Phase 1):
 
 | テーブル | 説明 |
 |----------|------|
 | `categories` | 機器カテゴリ（speaker, amplifier, dac等） |
 | `brands` | オーディオブランド |
 | `equipment` | 機器マスタ（スペックはJSONB） |
-| `compatibility` | 機器間の互換性スコア |
+| `compatibilities` | 機器間の互換性スコア |
+
+将来追加 (Phase 2+):
+
+| テーブル | 説明 |
+|----------|------|
 | `shops` | オンライン/実店舗 |
-| `prices` | 価格履歴（パーティション分割） |
+| `prices` | 価格履歴 |
 | `user_profiles` | ユーザーアカウント |
 | `user_systems` | マイシステム |
 | `reviews` | レビュー |
@@ -169,61 +195,52 @@ terraform apply
 ## API Endpoints
 
 ```
+# Categories
+GET    /api/categories              # カテゴリ一覧
+
+# Brands
+GET    /api/brands                  # ブランド一覧
+GET    /api/brands/:slug            # ブランド詳細
+
 # Equipment
-GET    /api/equipment                 # 機器一覧（フィルタ・ページネーション）
-GET    /api/equipment/:slug           # 機器詳細
-GET    /api/equipment/:slug/prices    # 価格一覧
+GET    /api/equipment               # 機器一覧（フィルタ・ページネーション）
+GET    /api/equipment/:slug         # 機器詳細
 GET    /api/equipment/:slug/compatibility  # 互換性情報
 
 # Search
-GET    /api/search                    # 統合検索
-POST   /api/search/compatibility      # 互換性検索
-
-# Prices
-GET    /api/prices/lowest/:id         # 最安値
-GET    /api/prices/history/:id        # 価格履歴
-
-# Users (authenticated)
-GET    /api/users/me                  # プロファイル
-GET    /api/systems                   # マイシステム一覧
-POST   /api/reviews                   # レビュー投稿
+GET    /api/search                  # 統合検索
 ```
 
 ## Commands
 
 ```bash
-# Frontend
-cd frontend
-pnpm dev              # 開発サーバー起動
+# Frontend (frontend/ ディレクトリで実行)
+pnpm dev              # 開発サーバー起動 (localhost:3000)
 pnpm build            # 本番ビルド
 pnpm lint             # ESLint
 pnpm test             # テスト
 
-# Backend
-cd backend
-pnpm dev              # Serverless offline
-pnpm deploy           # AWS デプロイ
-pnpm test             # テスト
+# Backend (Docker経由)
+docker-compose up -d                          # 全サービス起動
+docker-compose exec backend rails db:migrate  # マイグレーション
+docker-compose exec backend rails db:seed     # シードデータ
+docker-compose exec backend rails console     # Railsコンソール
+docker-compose exec backend rspec             # テスト
+docker-compose logs -f backend                # ログ確認
 
-# Terraform
-cd infrastructure/terraform
+# Terraform (infrastructure/terraform/ ディレクトリで実行)
 terraform init        # 初期化
 terraform plan        # プレビュー
 terraform apply       # デプロイ
-
-# Database
-docker-compose up -d postgres   # ローカルDB起動
-pnpm db:migrate                 # マイグレーション
-pnpm db:seed                    # シードデータ
 ```
 
 ## Cost Estimates (Monthly)
 
 | Phase | コスト |
 |-------|--------|
-| Phase 1 MVP | ~$60-110 |
-| Phase 2-3 | ~$185 |
-| Production | ~$400-550 |
+| Phase 1 MVP | ~$80-130 |
+| Phase 2-3 | ~$200 |
+| Production | ~$450-600 |
 
 ## Documentation
 

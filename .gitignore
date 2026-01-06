@@ -8,6 +8,13 @@ out/
 dist/
 build/
 
+# Rails
+backend/tmp/
+backend/log/
+backend/storage/
+backend/vendor/bundle/
+frontend/next-env.d.ts
+
 # Environment
 .env
 .env.local
@@ -49,8 +56,6 @@ yarn-error.log*
 coverage/
 .nyc_output/
 
-# Serverless
-.serverless/
 
 # OS
 .DS_Store
